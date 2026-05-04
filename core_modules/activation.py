@@ -92,17 +92,13 @@ class Tanh(nn.Module):
         return tanh(input)
 
 
+def _softmax_dim_adapter(input):
+    return 0 if input.dim() in (0, 1, 3) else 1
+
+
 class SoftmaxFunction(torch.autograd.Function):
     @staticmethod
-    def forward(input, dim=None, _stacklevel=3, dtype=None):
-        if dim is None:
-            warnings.warn(
-                "Implicit dimension choice for softmax has been deprecated. "
-                "Change the call to include dim=X as an argument.",
-                stacklevel=_stacklevel,
-            )
-            dim = 0 if input.dim() in (0, 1, 3) else 1
-
+    def forward(input, dim, dtype=None):
         if dtype is not None:
             input = input.to(dtype)
         out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
@@ -111,32 +107,34 @@ class SoftmaxFunction(torch.autograd.Function):
     @staticmethod
     def setup_context(ctx, inputs, output):
         ctx.dim = inputs[1]
+        ctx.input_dtype = inputs[0].dtype
         ctx.save_for_backward(output)
 
     @staticmethod
     def backward(ctx, grad_output):
         (out,) = ctx.saved_tensors
-        out.transpose(ctx.dim, -1)
-        jacobi = out.unsqueeze(-1) @ out.unsqueeze(-2)
-        return grad_output.unsqueeze(-1) * jacobi
+        # Compute the jacobian explicitly will explode the memory, avoid that.
+        grad_input = grad_output * out
+        grad_input = grad_input - grad_input.sum(dim=ctx.dim, keepdim=True) * out
+        return grad_input.to(ctx.input_dtype), None, None
 
 
 def softmax(input, dim=None, _stacklevel=3, dtype=None):
-    # return SoftmaxFunction.apply(input, dim, _stacklevel, dtype)
-
-    # Regular impl without pedantical customized backward for learning.
     if dim is None:
         warnings.warn(
             "Implicit dimension choice for softmax has been deprecated. "
             "Change the call to include dim=X as an argument.",
             stacklevel=_stacklevel,
         )
-        dim = 0 if input.dim() in (0, 1, 3) else 1
+        dim = _softmax_dim_adapter(input)
 
-    if dtype is not None:
-        input = input.to(dtype)
-    out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
-    return out / out.sum(dim=dim, keepdim=True)
+    # # Regular impl without pedantical customized backward for learning.
+    # if dtype is not None:
+    #     input = input.to(dtype)
+    # out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
+    # return out / out.sum(dim=dim, keepdim=True)
+
+    return SoftmaxFunction.apply(input, dim, dtype)
 
 
 class Softmax(nn.Module):
