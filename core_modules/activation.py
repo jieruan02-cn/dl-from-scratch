@@ -92,8 +92,19 @@ class Tanh(nn.Module):
         return tanh(input)
 
 
-def _softmax_dim_adapter(input):
+def _default_softmax_dim(input):
     return 0 if input.dim() in (0, 1, 3) else 1
+
+
+def _resolve_dim(input, dim, _stacklevel):
+    if dim is None:
+        warnings.warn(
+            "Implicit dimension choice for softmax has been deprecated. "
+            "Change the call to include dim=X as an argument.",
+            stacklevel=_stacklevel,
+        )
+        dim = _default_softmax_dim(input)
+    return dim
 
 
 class SoftmaxFunction(torch.autograd.Function):
@@ -120,13 +131,7 @@ class SoftmaxFunction(torch.autograd.Function):
 
 
 def softmax(input, dim=None, _stacklevel=3, dtype=None):
-    if dim is None:
-        warnings.warn(
-            "Implicit dimension choice for softmax has been deprecated. "
-            "Change the call to include dim=X as an argument.",
-            stacklevel=_stacklevel,
-        )
-        dim = _softmax_dim_adapter(input)
+    dim = _resolve_dim(input, dim, _stacklevel)
 
     # # Regular impl without pedantical customized backward for learning.
     # if dtype is not None:
@@ -144,3 +149,47 @@ class Softmax(nn.Module):
 
     def forward(self, input):
         return softmax(input, self.dim)
+
+
+class LogSoftmaxFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, dim, dtype=None):
+        if dtype is not None:
+            input = input.to(dtype)
+        out = input - input.max(dim=dim, keepdim=True).values
+        return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.dim = inputs[1]
+        ctx.input_dtype = inputs[0].dtype
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = grad_output - grad_output.sum(
+            dim=ctx.dim, keepdim=True
+        ) * torch.exp(out)
+        return grad_input.to(ctx.input_dtype), None, None
+
+
+def log_softmax(input, dim=None, _stacklevel=3, dtype=None):
+    dim = _resolve_dim(input, dim, _stacklevel)
+
+    # # Regular impl without pedantical customized backward for learning.
+    # if dtype is not None:
+    #     input = input.to(dtype)
+    # out = input - input.max(dim=dim, keepdim=True).values
+    # return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
+
+    return LogSoftmaxFunction.apply(input, dim, dtype)
+
+
+class LogSoftmax(nn.Module):
+    def __init__(self, dim=None):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return log_softmax(input, self.dim)
