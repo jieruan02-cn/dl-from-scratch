@@ -157,6 +157,7 @@ class LogSoftmaxFunction(torch.autograd.Function):
         if dtype is not None:
             input = input.to(dtype)
         out = input - input.max(dim=dim, keepdim=True).values
+        # Use torch.logsumexp for simplicity and speed, keep it plain for learning.
         return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
 
     @staticmethod
