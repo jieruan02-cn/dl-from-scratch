@@ -19,10 +19,6 @@ def relu(input, inplace=False):
     return input.clamp_(min=0) if inplace else input.clamp(min=0)
 
 
-def relu_(input):
-    return input.clamp_(min=0)
-
-
 class ReLU(nn.Module):
     def __init__(self, inplace=False):
         super().__init__()
@@ -30,6 +26,42 @@ class ReLU(nn.Module):
 
     def forward(self, x):
         return relu(x, self.inplace)
+
+
+# Assume negtaive negative_slope is error, more restrictive than PyTorch. Revisit later.
+class LeakyReLUInplaceFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, negative_slope):
+        input[input < 0] *= negative_slope
+        return input
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.negative_slope = inputs[1]
+        ctx.mark_dirty(output)
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = torch.where(out > 0, grad_output, ctx.negative_slope * grad_output)
+        return grad_input, None
+
+
+def leaky_relu(input, negative_slope=0.01, inplace=False):
+    if inplace:
+        return LeakyReLUInplaceFunction.apply(input, negative_slope)
+    return torch.where(input > 0, input, negative_slope * input)
+
+
+class LeakyRelu(nn.Module):
+    def __init__(self, negative_slope=0.01, inplace=False):
+        super().__init__()
+        self.negative_slope = negative_slope
+        self.inplace = inplace
+
+    def forward(self, input):
+        return leaky_relu(input, self.negative_slope, self.inplace)
 
 
 # Customized backward is used to avoid numerical overflow. When x is very small x (negative), regular autograd will
