@@ -60,6 +60,47 @@ class LeakyRelu(nn.Module):
         return leaky_relu(input, self.negative_slope, self.inplace)
 
 
+class PReLUFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, weight):
+        if input.dim() == 0:
+            shape = []
+        else:
+            # For 0D, an empty shape keeps weight 0-D too; using [-1] would force
+            # input * weight.view([-1]) to broadcast 0-D × (1,) → (1,), changing output rank.
+            shape = [1] * input.dim()
+            shape[min(1, len(shape) - 1)] = -1
+        ctx.shape = shape
+
+        mask = input >= 0
+        ctx.save_for_backward(mask, input, weight)
+        return torch.where(mask, input, input * weight.view(shape))
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (mask, input, weight) = ctx.saved_tensors
+        weight_view = weight.view(ctx.shape)
+        grad_input = torch.where(mask, grad_output, grad_output * weight_view)
+        grad_weight = (
+            torch.where(mask, 0, grad_output * input)
+            .sum([i for (i, x) in enumerate(weight_view.shape) if x == 1])
+            .view_as(weight)
+        )
+        return grad_input, grad_weight
+
+
+class PReLU(nn.Module):
+    def __init__(self, num_parameters=1, init=0.25, device=None, dtype=None):
+        super().__init__()
+        self.num_parameters = num_parameters
+        self.weight = nn.Parameter(
+            torch.full((num_parameters,), init, device=device, dtype=dtype)
+        )
+
+    def forward(self, input):
+        return PReLUFunction.apply(input, self.weight)
+
+
 # Customized backward is used to avoid numerical overflow. When x is very small x (negative), regular autograd will
 # compute exp(-x) / (1 + exp(-x))^2, leading to overflow. using out * (1 - out) with out in [0, 1] avoids this.
 class SigmoidFunction(torch.autograd.Function):
