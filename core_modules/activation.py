@@ -390,3 +390,38 @@ class SiLU(nn.Module):
 
     def forward(self, input):
         return silu(input, self.inplace)
+
+
+class GLUFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, dim):
+        assert input.shape[dim] % 2 == 0
+        length = input.shape[dim] // 2
+        sig_b = sigmoid(torch.narrow(input, dim, length, length))
+        out = torch.narrow(input, dim, 0, length) * sig_b
+
+        ctx.dim = dim
+        # saving torch.narrow(input, dim, 0, length) will cause saving whole input as
+        # pytorch doesn't support save half of allocation.
+        ctx.save_for_backward(out, sig_b)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out, sig_b) = ctx.saved_tensors
+        grad_a = grad_output * sig_b
+        grad_input = torch.cat((grad_a, grad_output * out * (1 - sig_b)), ctx.dim)
+        return grad_input, None
+
+
+def glu(input, dim=-1):
+    return GLUFunction.apply(input, dim)
+
+
+class GLU(nn.Module):
+    def __init__(self, dim=-1):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return glu(input, self.dim)
