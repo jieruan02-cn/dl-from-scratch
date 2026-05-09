@@ -33,6 +33,110 @@ class Sigmoid(nn.Module):
         return sigmoid(input)
 
 
+def _default_softmax_dim(input):
+    return 0 if input.dim() in (0, 1, 3) else 1
+
+
+def _resolve_dim(input, dim, _stacklevel):
+    if dim is None:
+        warnings.warn(
+            "Implicit dimension choice for softmax has been deprecated. "
+            "Change the call to include dim=X as an argument.",
+            stacklevel=_stacklevel,
+        )
+        dim = _default_softmax_dim(input)
+    return dim
+
+
+class SoftmaxFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, dim, dtype=None):
+        if dtype is not None:
+            input = input.to(dtype)
+        out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
+        return out / out.sum(dim=dim, keepdim=True)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.dim = inputs[1]
+        ctx.input_dtype = inputs[0].dtype
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        # Compute the jacobian explicitly will explode the memory, avoid that.
+        grad_input = grad_output * out
+        grad_input = grad_input - grad_input.sum(dim=ctx.dim, keepdim=True) * out
+        return grad_input.to(ctx.input_dtype), None, None
+
+
+def softmax(input, dim=None, _stacklevel=3, dtype=None):
+    dim = _resolve_dim(input, dim, _stacklevel)
+
+    # # Regular impl without pedantical customized backward for learning.
+    # if dtype is not None:
+    #     input = input.to(dtype)
+    # out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
+    # return out / out.sum(dim=dim, keepdim=True)
+
+    return SoftmaxFunction.apply(input, dim, dtype)
+
+
+class Softmax(nn.Module):
+    def __init__(self, dim=None):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return softmax(input, self.dim)
+
+
+class LogSoftmaxFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, dim, dtype=None):
+        if dtype is not None:
+            input = input.to(dtype)
+        out = input - input.max(dim=dim, keepdim=True).values
+        # Use torch.logsumexp for simplicity and speed, keep it plain for learning.
+        return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.dim = inputs[1]
+        ctx.input_dtype = inputs[0].dtype
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = grad_output - grad_output.sum(
+            dim=ctx.dim, keepdim=True
+        ) * torch.exp(out)
+        return grad_input.to(ctx.input_dtype), None, None
+
+
+def log_softmax(input, dim=None, _stacklevel=3, dtype=None):
+    dim = _resolve_dim(input, dim, _stacklevel)
+
+    # # Regular impl without pedantical customized backward for learning.
+    # if dtype is not None:
+    #     input = input.to(dtype)
+    # out = input - input.max(dim=dim, keepdim=True).values
+    # return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
+
+    return LogSoftmaxFunction.apply(input, dim, dtype)
+
+
+class LogSoftmax(nn.Module):
+    def __init__(self, dim=None):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return log_softmax(input, self.dim)
+
+
 # TanhFunction is mainly for optimal efficiency for tanh, otherwise reusing sigmoid for tanh is better practice:
 # tanh(x) = 2sigmoid(2x) - 1
 class TanhFunction(torch.autograd.Function):
@@ -252,105 +356,37 @@ class GELU(nn.Module):
         return gelu(input, self.approximate)
 
 
-def _default_softmax_dim(input):
-    return 0 if input.dim() in (0, 1, 3) else 1
-
-
-def _resolve_dim(input, dim, _stacklevel):
-    if dim is None:
-        warnings.warn(
-            "Implicit dimension choice for softmax has been deprecated. "
-            "Change the call to include dim=X as an argument.",
-            stacklevel=_stacklevel,
-        )
-        dim = _default_softmax_dim(input)
-    return dim
-
-
-class SoftmaxFunction(torch.autograd.Function):
+class SiLUFunction(torch.autograd.Function):
     @staticmethod
-    def forward(input, dim, dtype=None):
-        if dtype is not None:
-            input = input.to(dtype)
-        out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
-        return out / out.sum(dim=dim, keepdim=True)
-
-    @staticmethod
-    def setup_context(ctx, inputs, output):
-        ctx.dim = inputs[1]
-        ctx.input_dtype = inputs[0].dtype
-        ctx.save_for_backward(output)
+    def forward(ctx, input, inplace=False):
+        needs_grad = torch.is_grad_enabled() and input.requires_grad
+        if inplace:
+            if needs_grad:
+                ctx.save_for_backward(input.clone())
+            input.mul_(sigmoid(input))
+            ctx.mark_dirty(input)
+            return input
+        else:
+            if needs_grad:
+                ctx.save_for_backward(input)
+            return input * sigmoid(input)
 
     @staticmethod
     def backward(ctx, grad_output):
-        (out,) = ctx.saved_tensors
-        # Compute the jacobian explicitly will explode the memory, avoid that.
-        grad_input = grad_output * out
-        grad_input = grad_input - grad_input.sum(dim=ctx.dim, keepdim=True) * out
-        return grad_input.to(ctx.input_dtype), None, None
+        (input,) = ctx.saved_tensors
+        sig = sigmoid(input)
+        grad_input = grad_output * sig * (1 + input - input * sig)
+        return grad_input, None
 
 
-def softmax(input, dim=None, _stacklevel=3, dtype=None):
-    dim = _resolve_dim(input, dim, _stacklevel)
-
-    # # Regular impl without pedantical customized backward for learning.
-    # if dtype is not None:
-    #     input = input.to(dtype)
-    # out = torch.exp(input - input.max(dim=dim, keepdim=True).values)
-    # return out / out.sum(dim=dim, keepdim=True)
-
-    return SoftmaxFunction.apply(input, dim, dtype)
+def silu(input, inplace=False):
+    return SiLUFunction.apply(input, inplace)
 
 
-class Softmax(nn.Module):
-    def __init__(self, dim=None):
+class SiLU(nn.Module):
+    def __init__(self, inplace=False):
         super().__init__()
-        self.dim = dim
+        self.inplace = inplace
 
     def forward(self, input):
-        return softmax(input, self.dim)
-
-
-class LogSoftmaxFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(input, dim, dtype=None):
-        if dtype is not None:
-            input = input.to(dtype)
-        out = input - input.max(dim=dim, keepdim=True).values
-        # Use torch.logsumexp for simplicity and speed, keep it plain for learning.
-        return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
-
-    @staticmethod
-    def setup_context(ctx, inputs, output):
-        ctx.dim = inputs[1]
-        ctx.input_dtype = inputs[0].dtype
-        ctx.save_for_backward(output)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        (out,) = ctx.saved_tensors
-        grad_input = grad_output - grad_output.sum(
-            dim=ctx.dim, keepdim=True
-        ) * torch.exp(out)
-        return grad_input.to(ctx.input_dtype), None, None
-
-
-def log_softmax(input, dim=None, _stacklevel=3, dtype=None):
-    dim = _resolve_dim(input, dim, _stacklevel)
-
-    # # Regular impl without pedantical customized backward for learning.
-    # if dtype is not None:
-    #     input = input.to(dtype)
-    # out = input - input.max(dim=dim, keepdim=True).values
-    # return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
-
-    return LogSoftmaxFunction.apply(input, dim, dtype)
-
-
-class LogSoftmax(nn.Module):
-    def __init__(self, dim=None):
-        super().__init__()
-        self.dim = dim
-
-    def forward(self, input):
-        return log_softmax(input, self.dim)
+        return silu(input, self.inplace)
