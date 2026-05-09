@@ -1,6 +1,67 @@
+import math
 import torch
 import torch.nn as nn
 import warnings
+
+
+# Customized backward is used to avoid numerical overflow. When x is very small x (negative), regular autograd will
+# compute exp(-x) / (1 + exp(-x))^2, leading to overflow. using out * (1 - out) with out in [0, 1] avoids this.
+class SigmoidFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(x):
+        return 1 / (1 + torch.exp(-x))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        return grad_output * out * (1 - out)
+
+
+def sigmoid(input):
+    return SigmoidFunction.apply(input)
+
+
+class Sigmoid(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+    def forward(self, input):
+        return sigmoid(input)
+
+
+# TanhFunction is mainly for optimal efficiency for tanh, otherwise reusing sigmoid for tanh is better practice:
+# tanh(x) = 2sigmoid(2x) - 1
+class TanhFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(x):
+        # (exp(x) - exp(-x))/(exp(x) + exp(-x)) is worse numerically as any of the inf will cause issue, here inf in
+        # denominator will result 0.
+        return 2 / (1 + torch.exp(-2 * x)) - 1
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        return grad_output * (1 - out**2)
+
+
+def tanh(input):
+    return TanhFunction.apply(input)
+
+
+class Tanh(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+
+    def forward(self, input):
+        return tanh(input)
 
 
 # Lessons:
@@ -137,64 +198,58 @@ class ELU(nn.Module):
         return elu(input, self.alpha, self.inplace)
 
 
-# Customized backward is used to avoid numerical overflow. When x is very small x (negative), regular autograd will
-# compute exp(-x) / (1 + exp(-x))^2, leading to overflow. using out * (1 - out) with out in [0, 1] avoids this.
-class SigmoidFunction(torch.autograd.Function):
+def _gaussian_cdf(input, approximate):
+    if approximate == "none":
+        return 0.5 * (1 + torch.erf(input / math.sqrt(2)))
+    elif approximate == "tanh":
+        return 0.5 * (1 + tanh(math.sqrt(2 / math.pi) * (input + 0.044715 * input**3)))
+    else:
+        raise ValueError("unrecognized approximate method")
+
+
+class GELUFunction(torch.autograd.Function):
     @staticmethod
-    def forward(x):
-        return 1 / (1 + torch.exp(-x))
-
-    @staticmethod
-    def setup_context(ctx, inputs, output):
-        ctx.save_for_backward(output)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        (out,) = ctx.saved_tensors
-        return grad_output * out * (1 - out)
-
-
-def sigmoid(input):
-    return SigmoidFunction.apply(input)
-
-
-class Sigmoid(nn.Module):
-    def __init__(self, *args, **kwargs):
-        super().__init__()
-
-    def forward(self, input):
-        return sigmoid(input)
-
-
-# TanhFunction is mainly for optimal efficiency for tanh, otherwise reusing sigmoid for tanh is better practice:
-# tanh(x) = 2sigmoid(2x) - 1
-class TanhFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(x):
-        # (exp(x) - exp(-x))/(exp(x) + exp(-x)) is worse numerically as any of the inf will cause issue, here inf in
-        # denominator will result 0.
-        return 2 / (1 + torch.exp(-2 * x)) - 1
+    def forward(input, approximate="none"):
+        return input * _gaussian_cdf(input, approximate)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        ctx.save_for_backward(output)
+        (input, approximate) = inputs
+        ctx.approximate = approximate
+        ctx.save_for_backward(input)
 
     @staticmethod
     def backward(ctx, grad_output):
-        (out,) = ctx.saved_tensors
-        return grad_output * (1 - out**2)
+        (input,) = ctx.saved_tensors
+        gaussian_out = _gaussian_cdf(input, ctx.approximate)
+        if ctx.approximate == "none":
+            density = torch.exp(-(input**2) * 0.5) / math.sqrt(2 * math.pi)
+        elif ctx.approximate == "tanh":
+            # use tanh^'(x) = 1 - tanh^2(x)
+            density = (
+                4
+                * gaussian_out
+                * (1 - gaussian_out)
+                * (1 + 3 * 0.044715 * input**2)
+                / math.sqrt(2 * math.pi)
+            )
+        else:
+            raise ValueError("unrecognized approximate method")
+        grad_input = grad_output * (gaussian_out + input * density)
+        return grad_input, None
 
 
-def tanh(input):
-    return TanhFunction.apply(input)
+def gelu(input, approximate="none"):
+    return GELUFunction.apply(input, approximate)
 
 
-class Tanh(nn.Module):
-    def __init__(self, *args, **kwargs):
+class GELU(nn.Module):
+    def __init__(self, approximate="none"):
         super().__init__()
+        self.approximate = approximate
 
     def forward(self, input):
-        return tanh(input)
+        return gelu(input, self.approximate)
 
 
 def _default_softmax_dim(input):
