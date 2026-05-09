@@ -101,6 +101,42 @@ class PReLU(nn.Module):
         return PReLUFunction.apply(input, self.weight)
 
 
+class ELUFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, alpha, inplace):
+        mask = input <= 0
+        if inplace:
+            input[mask] = alpha * (torch.exp(input[mask]) - 1)
+            ctx.mark_dirty(input)
+            out = input
+        else:
+            out = torch.where(mask, alpha * (torch.exp(input) - 1), input)
+        # calling save_for_backward will save only the last tensors.
+        ctx.save_for_backward(mask, out)
+        ctx.alpha = alpha
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (mask, out) = ctx.saved_tensors
+        grad_input = torch.where(mask, grad_output * (out + ctx.alpha), grad_output)
+        return grad_input, None, None
+
+
+def elu(input, alpha=1.0, inplace=False):
+    return ELUFunction.apply(input, alpha, inplace)
+
+
+class ELU(nn.Module):
+    def __init__(self, alpha=1.0, inplace=False):
+        super().__init__()
+        self.alpha = alpha
+        self.inplace = inplace
+
+    def forward(self, input):
+        return elu(input, self.alpha, self.inplace)
+
+
 # Customized backward is used to avoid numerical overflow. When x is very small x (negative), regular autograd will
 # compute exp(-x) / (1 + exp(-x))^2, leading to overflow. using out * (1 - out) with out in [0, 1] avoids this.
 class SigmoidFunction(torch.autograd.Function):
