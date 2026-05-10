@@ -396,9 +396,9 @@ class GLUFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, dim):
         assert input.shape[dim] % 2 == 0
-        length = input.shape[dim] // 2
-        sig_b = sigmoid(torch.narrow(input, dim, length, length))
-        out = torch.narrow(input, dim, 0, length) * sig_b
+        a, b = torch.chunk(input, 2, dim)
+        sig_b = sigmoid(b)
+        out = a * sig_b
 
         ctx.dim = dim
         # saving torch.narrow(input, dim, 0, length) will cause saving whole input as
@@ -425,3 +425,63 @@ class GLU(nn.Module):
 
     def forward(self, input):
         return glu(input, self.dim)
+
+
+def reglu(input, dim=-1):
+    assert input.shape[dim] % 2 == 0
+    a, b = torch.chunk(input, 2, dim)
+    return relu(a) * b
+
+
+class ReGLU(nn.Module):
+    def __init__(self, dim=-1):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return reglu(input, self.dim)
+
+
+def geglu(input, dim=-1):
+    assert input.shape[dim] % 2 == 0
+    a, b = torch.chunk(input, 2, dim)
+    return gelu(a) * b
+
+
+class GeGLU(nn.Module):
+    def __init__(self, dim=-1):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return geglu(input, self.dim)
+
+
+def swish(input, beta=1):
+    if isinstance(beta, (int, float)) and beta == 1.0:
+        return silu(input)
+
+    return input * sigmoid(beta * input)
+
+
+def swishglu(input, dim=-1, beta=1):
+    assert input.shape[dim] % 2 == 0
+    a, b = torch.chunk(input, 2, dim)
+    return swish(a, beta) * b
+
+
+class SwishGLU(nn.Module):
+    def __init__(
+        self, dim=-1, learnable_beta=False, beta_init=1.0, device=None, dtype=None
+    ):
+        super().__init__()
+        self.dim = dim
+        if learnable_beta:
+            self.beta = nn.Parameter(
+                torch.tensor(beta_init, device=device, dtype=dtype)
+            )
+        else:
+            self.beta = beta_init
+
+    def forward(self, input):
+        return swishglu(input, self.dim, self.beta)
