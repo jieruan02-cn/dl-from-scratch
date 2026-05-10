@@ -392,6 +392,7 @@ class SiLU(nn.Module):
         return silu(input, self.inplace)
 
 
+# Note: GLU(a, b) = a * sigmoid(b) as PyTorch but not as the rest GLU in industry standard.
 class GLUFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, dim):
