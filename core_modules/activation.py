@@ -359,7 +359,7 @@ class GELU(nn.Module):
 class SiLUFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, inplace=False):
-        needs_grad = torch.is_grad_enabled() and input.requires_grad
+        needs_grad = input.requires_grad
         if inplace:
             if needs_grad:
                 ctx.save_for_backward(input.clone())
@@ -522,3 +522,44 @@ class Softplus(nn.Module):
 
     def forward(self, input):
         return softplus(input, self.beta, self.threshold)
+
+
+class MishFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, inplace):
+        needs_grad = input.requires_grad
+        tanh_softplus = tanh(softplus(input))
+        if inplace:
+            if needs_grad:
+                ctx.save_for_backward(input.clone())
+            input.mul_(tanh_softplus)
+            ctx.mark_dirty(input)
+            return input
+        else:
+            if needs_grad:
+                ctx.save_for_backward(input)
+            return input * tanh_softplus
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (input,) = ctx.saved_tensors
+        tanh_softplus = tanh(softplus(input))
+        # use sigmoid(input) instead of torch.where(input <= 20.0, sigmoid(input), 1.0)
+        # as sigmoid saturated to near 1.0 after x >= 20, no need for piecewise.
+        grad_input = grad_output * (
+            tanh_softplus + input * (1 - tanh_softplus**2) * sigmoid(input)
+        )
+        return grad_input, None
+
+
+def mish(input, inplace=False):
+    return MishFunction.apply(input, inplace)
+
+
+class Mish(nn.Module):
+    def __init__(self, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+
+    def forward(self, input):
+        return mish(input, self.inplace)
