@@ -505,11 +505,12 @@ class SoftplusFunction(torch.autograd.Function):
         (input,) = ctx.saved_tensors
         mask = input * ctx.beta <= ctx.threshold
         grad_input = grad_output.clone()
-        grad_input[mask] *= sigmoid(ctx.beta * input)
+        grad_input[mask] *= sigmoid(ctx.beta * input[mask])
         return grad_input, None, None
 
 
 def softplus(input, beta=1.0, threshold=20.0):
+    assert beta > 0
     return SoftplusFunction.apply(input, beta, threshold)
 
 
