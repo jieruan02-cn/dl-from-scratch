@@ -486,3 +486,38 @@ class SwishGLU(nn.Module):
 
     def forward(self, input):
         return swishglu(input, self.dim, self.beta)
+
+
+class SoftplusFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, beta, threshold):
+        mask = input * beta <= threshold
+        out = input.clone()
+        out[mask] = torch.log1p(torch.exp(out[mask] * beta)) / beta
+
+        ctx.beta = beta
+        ctx.threshold = threshold
+        ctx.save_for_backward(input)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (input,) = ctx.saved_tensors
+        mask = input * ctx.beta <= ctx.threshold
+        grad_input = grad_output.clone()
+        grad_input[mask] *= sigmoid(ctx.beta * input)
+        return grad_input, None, None
+
+
+def softplus(input, beta=1.0, threshold=20.0):
+    return SoftplusFunction.apply(input, beta, threshold)
+
+
+class Softplus(nn.Module):
+    def __init__(self, beta=1.0, threshold=20.0):
+        super().__init__()
+        self.beta = beta
+        self.threshold = threshold
+
+    def forward(self, input):
+        return softplus(input, self.beta, self.threshold)
