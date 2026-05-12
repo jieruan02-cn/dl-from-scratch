@@ -563,3 +563,48 @@ class Mish(nn.Module):
 
     def forward(self, input):
         return mish(input, self.inplace)
+
+
+class SELUFunction(torch.autograd.Function):
+    alpha = 1.6732632423543772848170429916717
+    scale = 1.0507009873554804934193349852946
+
+    @staticmethod
+    def forward(ctx, input, inplace):
+        mask = input < 0
+        if inplace:
+            out = input
+        else:
+            out = input.clone()
+        # use torch.expm1 instead of (torch.exp(out[mask]) - 1) to preserve numerical
+        # accuracy for very small negative x ~ -10^-8
+        out[mask] = SELUFunction.alpha * torch.expm1(out[mask])
+        out *= SELUFunction.scale
+        if inplace:
+            ctx.mark_dirty(input)
+
+        if input.requires_grad:
+            ctx.save_for_backward(out)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        mask = out < 0
+        grad_input = grad_output * torch.where(
+            mask, out + SELUFunction.alpha * SELUFunction.scale, SELUFunction.scale
+        )
+        return grad_input, None
+
+
+def selu(input, inplace=False):
+    return SELUFunction.apply(input, inplace)
+
+
+class SELU(nn.Module):
+    def __init__(self, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+
+    def forward(self, input):
+        return selu(input, self.inplace)
