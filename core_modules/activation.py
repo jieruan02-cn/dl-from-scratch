@@ -648,3 +648,6 @@ class Hardtanh(nn.Module):
 
     def forward(self, input):
         return hardtanh(input, self.min_val, self.max_val, self.inplace)
+
+
+# add fake comments.
