@@ -608,3 +608,43 @@ class SELU(nn.Module):
 
     def forward(self, input):
         return selu(input, self.inplace)
+
+
+class HardtanhFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, min_val, max_val, inplace):
+        if inplace:
+            out = input
+        else:
+            out = input.clone()
+        out.clamp_(min=min_val, max=max_val)
+
+        if inplace:
+            ctx.mark_dirty(input)
+        if input.requires_grad:
+            ctx.min_val = min_val
+            ctx.max_val = max_val
+            ctx.save_for_backward(out)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        mask = (out <= ctx.min_val) | (out >= ctx.max_val)
+        grad_input = torch.where(mask, 0.0, grad_output)
+        return grad_input, None, None, None
+
+
+def hardtanh(input, min_val=-1.0, max_val=1.0, inplace=False):
+    return HardtanhFunction.apply(input, min_val, max_val, inplace)
+
+
+class Hardtanh(nn.Module):
+    def __init__(self, min_val=-1.0, max_val=1.0, inplace=False):
+        super().__init__()
+        self.min_val = min_val
+        self.max_val = max_val
+        self.inplace = inplace
+
+    def forward(self, input):
+        return hardtanh(input, self.min_val, self.max_val, self.inplace)
