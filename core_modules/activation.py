@@ -193,6 +193,41 @@ class ReLU(nn.Module):
         return relu(x, self.inplace)
 
 
+class ReLU6Function(torch.autograd.Function):
+    @staticmethod
+    def forward(input, inplace):
+        return input.clamp_(0.0, 6.0) if inplace else input.clamp(0.0, 6.0)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, inplace = inputs
+        if inplace:
+            ctx.mark_dirty(input)
+        if input.requires_grad:
+            # saves output instead of mask as output already in VRAM and saves memory in
+            # fact compared to constructing a new mask tensor
+            ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = torch.where((out > 0.0) & (out < 6.0), grad_output, 0.0)
+        return grad_input, None
+
+
+def relu6(input, inplace=False):
+    return ReLU6Function.apply(input, inplace)
+
+
+class ReLU6(nn.Module):
+    def __init__(self, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+
+    def forward(self, input):
+        return relu6(input, self.inplace)
+
+
 class LeakyReLUFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, negative_slope, inplace):
