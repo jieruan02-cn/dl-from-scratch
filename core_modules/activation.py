@@ -648,3 +648,41 @@ class Hardtanh(nn.Module):
 
     def forward(self, input):
         return hardtanh(input, self.min_val, self.max_val, self.inplace)
+
+
+class HardsigmoidFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, inplace):
+        if inplace:
+            out = input
+        else:
+            out = input.clone()
+        out.add_(3).clamp_(0, 6).div_(6)
+        return out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, inplace = inputs
+        if input.requires_grad:
+            ctx.save_for_backward(output)
+        if inplace:
+            ctx.mark_dirty(input)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = torch.where((out > 0) & (out < 1), grad_output / 6.0, 0.0)
+        return grad_input, None
+
+
+def hardsigmoid(input, inplace=False):
+    return HardsigmoidFunction.apply(input, inplace)
+
+
+class Hardsigmoid(nn.Module):
+    def __init__(self, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+
+    def forward(self, input):
+        return hardsigmoid(input, self.inplace)
