@@ -686,3 +686,39 @@ class Hardsigmoid(nn.Module):
 
     def forward(self, input):
         return hardsigmoid(input, self.inplace)
+
+
+class HardswishFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, inplace):
+        if input.requires_grad:
+            ctx.save_for_backward(input.clone() if inplace else input)
+
+        hardsig_component = input.add(3.0).clamp_(0.0, 6.0).div_(6.0)
+        if inplace:
+            input.mul_(hardsig_component)
+            ctx.mark_dirty(input)
+            return input
+        else:
+            return input * hardsig_component
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (input,) = ctx.saved_tensors
+        grad_input = grad_output * torch.where(
+            input <= -3, 0.0, torch.where(input >= 3, 1.0, input / 3 + 0.5)
+        )
+        return grad_input, None
+
+
+def hardswish(input, inplace=False):
+    return HardswishFunction.apply(input, inplace)
+
+
+class Hardswish(nn.Module):
+    def __init__(self, inplace=False):
+        super().__init__()
+        self.inplace = inplace
+
+    def forward(self, input):
+        return hardswish(input, self.inplace)
