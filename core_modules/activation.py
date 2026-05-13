@@ -303,23 +303,27 @@ class PReLU(nn.Module):
 
 class ELUFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, alpha, inplace):
+    def forward(input, alpha, inplace):
         mask = input <= 0
-        if inplace:
-            input[mask] = alpha * (torch.exp(input[mask]) - 1)
-            ctx.mark_dirty(input)
-            out = input
-        else:
-            out = torch.where(mask, alpha * (torch.exp(input) - 1), input)
-        # calling save_for_backward will save only the last tensors.
-        ctx.save_for_backward(mask, out)
-        ctx.alpha = alpha
+        out = input if inplace else input.clone()
+        out[mask] = alpha * torch.expm1(out[mask])
         return out
 
     @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, alpha, inplace = inputs
+        ctx.alpha = alpha
+        if inplace:
+            ctx.mark_dirty(input)
+        if input.requires_grad:
+            ctx.save_for_backward(output)
+
+    @staticmethod
     def backward(ctx, grad_output):
-        (mask, out) = ctx.saved_tensors
-        grad_input = torch.where(mask, grad_output * (out + ctx.alpha), grad_output)
+        (out,) = ctx.saved_tensors
+        grad_input = torch.where(
+            out <= 0.0, grad_output * (out + ctx.alpha), grad_output
+        )
         return grad_input, None, None
 
 
