@@ -868,3 +868,37 @@ class Hardshrink(nn.Module):
 
     def forward(self, input):
         return hardshrink(input, self.lambd)
+
+
+class SoftshrinkFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, lambd):
+        return torch.where(
+            input > lambd,
+            input - lambd,
+            torch.where(input < -lambd, input + lambd, 0.0),
+        )
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        if inputs[0].requires_grad:
+            ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = grad_output * (out != 0.0)
+        return grad_input, None
+
+
+def softshrink(input, lambd=0.5):
+    return SoftshrinkFunction.apply(input, lambd)
+
+
+class Softshrink(nn.Module):
+    def __init__(self, lambd=0.5):
+        super().__init__()
+        self.lambd = lambd
+
+    def forward(self, input):
+        return softshrink(input, self.lambd)
