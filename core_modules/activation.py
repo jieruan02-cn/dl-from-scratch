@@ -695,10 +695,7 @@ class Hardtanh(nn.Module):
 class HardsigmoidFunction(torch.autograd.Function):
     @staticmethod
     def forward(input, inplace):
-        if inplace:
-            out = input
-        else:
-            out = input.clone()
+        out = input if inplace else input.clone()
         out.add_(3).clamp_(0, 6).div_(6)
         return out
 
@@ -713,7 +710,7 @@ class HardsigmoidFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         (out,) = ctx.saved_tensors
-        grad_input = torch.where((out > 0) & (out < 1), grad_output / 6.0, 0.0)
+        grad_input = torch.where((out > 0.0) & (out < 1.0), grad_output / 6.0, 0.0)
         return grad_input, None
 
 
