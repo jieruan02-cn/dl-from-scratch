@@ -790,3 +790,29 @@ def logsigmoid(input):
 class LogSigmoid(nn.Module):
     def forward(self, input):
         return logsigmoid(input)
+
+
+class SoftsignFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input):
+        return input / (1.0 + torch.abs(input))
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        if inputs[0].requires_grad:
+            ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = grad_output * (1.0 - torch.abs(out)) ** 2
+        return grad_input
+
+
+def softsign(input):
+    return SoftsignFunction.apply(input)
+
+
+class Softsign(nn.Module):
+    def forward(self, input):
+        return softsign(input)
