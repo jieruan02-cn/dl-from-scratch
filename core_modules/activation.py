@@ -805,8 +805,7 @@ class SoftsignFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         (out,) = ctx.saved_tensors
-        grad_input = grad_output * (1.0 - torch.abs(out)) ** 2
-        return grad_input
+        return grad_output * (1.0 - torch.abs(out)) ** 2
 
 
 def softsign(input):
@@ -816,3 +815,26 @@ def softsign(input):
 class Softsign(nn.Module):
     def forward(self, input):
         return softsign(input)
+
+
+class TanhshrinkFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input):
+        tanh_input = tanh(input)
+        if input.requires_grad:
+            ctx.save_for_backward(tanh_input)
+        return input - tanh_input
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (tanh_input,) = ctx.saved_tensors
+        return grad_output * tanh_input**2
+
+
+def tanhshrink(input):
+    return TanhshrinkFunction.apply(input)
+
+
+class Tanhshrink(nn.Module):
+    def forward(self, input):
+        return tanhshrink(input)
