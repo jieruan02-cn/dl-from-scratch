@@ -654,20 +654,20 @@ class SELU(nn.Module):
 
 class HardtanhFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, min_val, max_val, inplace):
-        if inplace:
-            out = input
-        else:
-            out = input.clone()
-        out.clamp_(min=min_val, max=max_val)
+    def forward(input, min_val, max_val, inplace):
+        return (
+            input.clamp_(min_val, max_val) if inplace else input.clamp(min_val, max_val)
+        )
 
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, min_val, max_val, inplace = inputs
         if inplace:
             ctx.mark_dirty(input)
         if input.requires_grad:
             ctx.min_val = min_val
             ctx.max_val = max_val
-            ctx.save_for_backward(out)
-        return out
+            ctx.save_for_backward(output)
 
     @staticmethod
     def backward(ctx, grad_output):
