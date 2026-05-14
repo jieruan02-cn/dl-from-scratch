@@ -761,3 +761,32 @@ class Hardswish(nn.Module):
 
     def forward(self, input):
         return hardswish(input, self.inplace)
+
+
+class LogSigmoidFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input):
+        mask = input > 0.0
+        out = torch.empty_like(input)
+        out[mask] = -torch.log1p(torch.exp(-input[mask]))
+        out[~mask] = input[~mask] - torch.log1p(torch.exp(input[~mask]))
+        return out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        if inputs[0].requires_grad:
+            ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        return grad_output * (1.0 - torch.exp(out))
+
+
+def logsigmoid(input):
+    return LogSigmoidFunction.apply(input)
+
+
+class LogSigmoid(nn.Module):
+    def forward(self, input):
+        return logsigmoid(input)
