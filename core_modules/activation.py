@@ -304,7 +304,7 @@ class PReLU(nn.Module):
 class ELUFunction(torch.autograd.Function):
     @staticmethod
     def forward(input, alpha, inplace):
-        mask = input <= 0
+        mask = input <= 0.0
         out = input if inplace else input.clone()
         out[mask] = alpha * torch.expm1(out[mask])
         return out
@@ -529,15 +529,18 @@ class SwishGLU(nn.Module):
 
 class SoftplusFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, beta, threshold):
+    def forward(input, beta, threshold):
         mask = input * beta <= threshold
         out = input.clone()
         out[mask] = torch.log1p(torch.exp(out[mask] * beta)) / beta
+        return out
 
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, beta, threshold = inputs
         ctx.beta = beta
         ctx.threshold = threshold
         ctx.save_for_backward(input)
-        return out
 
     @staticmethod
     def backward(ctx, grad_output):
