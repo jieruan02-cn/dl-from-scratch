@@ -540,14 +540,14 @@ class SoftplusFunction(torch.autograd.Function):
         input, beta, threshold = inputs
         ctx.beta = beta
         ctx.threshold = threshold
-        ctx.save_for_backward(input)
+        if input.requires_grad:
+            ctx.save_for_backward(input)
 
     @staticmethod
     def backward(ctx, grad_output):
         (input,) = ctx.saved_tensors
         mask = input * ctx.beta <= ctx.threshold
-        grad_input = grad_output.clone()
-        grad_input[mask] *= sigmoid(ctx.beta * input[mask])
+        grad_input = grad_output * torch.where(mask, sigmoid(ctx.beta * input), 1.0)
         return grad_input, None, None
 
 
