@@ -940,3 +940,45 @@ class CELU(nn.Module):
 
     def forward(self, input):
         return celu(input, self.alpha, self.inplace)
+
+
+class RReLUFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, lower, upper, inplace):
+        out = input if inplace else input.clone()
+        # stores slope instead of mask + alpha and using masked_fill_ is more efficient
+        # than torch.where
+        slope = torch.empty_like(out).uniform_(lower, upper)
+        slope.masked_fill_(input >= 0.0, 1.0)
+        out.mul_(slope)
+        if inplace:
+            ctx.mark_dirty(input)
+        if ctx.needs_input_grad[0]:
+            ctx.save_for_backward(slope)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (slope,) = ctx.saved_tensors
+        return grad_output * slope, None, None, None
+
+
+def rrelu(input, lower=0.125, upper=0.3333333333333333, inplace=False):
+    return RReLUFunction.apply(input, lower, upper, inplace)
+
+
+class RReLU(nn.Module):
+    def __init__(self, lower=0.125, upper=0.3333333333333333, inplace=False):
+        super().__init__()
+        self.lower = lower
+        self.upper = upper
+        self.inplace = inplace
+
+    def forward(self, input):
+        if self.training:
+            return rrelu(input, self.lower, self.upper, self.inplace)
+        else:
+            mask = input < 0.0
+            out = input if self.inplace else input.clone()
+            out.mul_(torch.where(mask, (self.lower + self.upper) * 0.5, 1.0))
+            return out
