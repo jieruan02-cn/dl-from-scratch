@@ -902,3 +902,41 @@ class Softshrink(nn.Module):
 
     def forward(self, input):
         return softshrink(input, self.lambd)
+
+
+class CELUFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, alpha, inplace):
+        mask = input < 0.0
+        out = input if inplace else input.clone()
+        out[mask] = alpha * torch.expm1(out[mask] / alpha)
+        return out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, alpha, inplace = inputs
+        ctx.alpha = alpha
+        if inplace:
+            ctx.mark_dirty(input)
+        if input.requires_grad:
+            ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        grad_input = grad_output * torch.where(out < 0.0, 1.0 + out / ctx.alpha, 1.0)
+        return grad_input, None, None
+
+
+def celu(input, alpha=1.0, inplace=False):
+    return CELUFunction.apply(input, alpha, inplace)
+
+
+class CELU(nn.Module):
+    def __init__(self, alpha=1.0, inplace=False):
+        super().__init__()
+        self.alpha = alpha
+        self.inplace = inplace
+
+    def forward(self, input):
+        return celu(input, self.alpha, self.inplace)
