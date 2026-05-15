@@ -978,6 +978,7 @@ class RReLU(nn.Module):
         if self.training:
             return rrelu(input, self.lower, self.upper, self.inplace)
         else:
+            # can directly call leaky_relu of torch or mine.
             mask = input < 0.0
             out = input if self.inplace else input.clone()
             out.mul_(torch.where(mask, (self.lower + self.upper) * 0.5, 1.0))
