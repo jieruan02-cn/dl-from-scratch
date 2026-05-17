@@ -88,3 +88,50 @@ class LayerNorm(nn.Module):
         return LayerNormFunction.apply(
             input, self.normalized_shape, self.weight, self.bias, self.eps
         )
+
+
+class RMSNormFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, normalized_shape, weight, eps):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_input, grad_weight = None, None
+
+        return grad_input, None, grad_weight, None
+
+
+def rms_norm(input, normalized_shape, weight=None, eps=None):
+    return RMSNormFunction.apply(input, normalized_shape, weight, eps)
+
+
+class RMSNorm(nn.Module):
+    def __init__(
+        self,
+        normalized_shape,
+        eps=None,
+        elementwise_affine=True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        if isinstance(normalized_shape, int):
+            self.normalized_shape = torch.Size([normalized_shape])
+        elif isinstance(normalized_shape, list):
+            self.normalized_shape = torch.Size(normalized_shape)
+        elif isinstance(normalized_shape, torch.Size):
+            self.normalized_shape = normalized_shape
+        else:
+            raise TypeError(
+                f"normalized_shape must be int, list, or torch.Size, got {type(normalized_shape)}"
+            )
+        self.eps = eps if eps is None else float(eps)
+        self.weight = None
+        if elementwise_affine:
+            self.weight = nn.Parameter(
+                torch.ones(self.normalized_shape, device=device, dtype=dtype)
+            )
+
+    def foward(self, input):
+        return rms_norm(input, self.normalized_shape, self.weight, self.eps)
