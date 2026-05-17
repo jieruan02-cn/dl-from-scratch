@@ -4,38 +4,44 @@ import torch.nn as nn
 
 class LayerNormFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, weight, bias, aggregate_dim, normalized_shape, eps):
-        input_var = torch.sqrt(
-            input.var(dim=aggregate_dim, correction=0, keepdim=True) + eps
-        )
-        input_normed = (input - input.mean(dim=aggregate_dim, keepdim=True)) / input_var
-        out = input_normed * weight if weight is not None else input_normed
+    def forward(ctx, input, weight, bias, agg_dim, normalized_shape, eps):
+        var, mean = torch.var_mean(input, dim=agg_dim, correction=0, keepdim=True)
+        rstd = torch.rsqrt(var + eps)
+        if weight is None:
+            out = (input - mean) * rstd
+        else:
+            out = (input - mean) * rstd * weight
         if bias is not None:
             out = out + bias
 
         if any(ctx.needs_input_grad):
-            ctx.save_for_backward(input_normed, input_var, weight)
-            ctx.aggregate_dim = aggregate_dim
+            # save input instead of normalized input to reduce persistent
+            # saved-for-backward state (held across entire forward pass until that
+            # layer's backward fires), input is typically needed anyway due to residual
+            # in transformer, so mean + rstd is cheaper than normed_input (N) + rstd
+            ctx.save_for_backward(input, mean, rstd, weight)
+            ctx.agg_dim = agg_dim
             ctx.batch_dim = tuple(range(input.dim() - len(normalized_shape)))
         return out
 
     @staticmethod
     def backward(ctx, grad_output):
-        (input_normed, input_var, weight) = ctx.saved_tensors
-        grad_weight = None
-        grad_bias = None
+        (input, mean, rstd, weight) = ctx.saved_tensors
+        normed_input = (input - mean) * rstd
+        grad_input, grad_weight, grad_bias = None, None, None
+        if ctx.needs_input_grad[0]:
+            grad_input = grad_output * weight if weight is not None else grad_output
+            grad_input = (
+                grad_input
+                - torch.mean(grad_input, dim=ctx.agg_dim, keepdim=True)
+                - torch.mean(grad_input * normed_input, dim=ctx.agg_dim, keepdim=True)
+                * normed_input
+            ) * rstd
         if ctx.needs_input_grad[1]:
-            grad_weight = (grad_output * input_normed).sum(ctx.batch_dim)
+            grad_weight = (grad_output * normed_input).sum(ctx.batch_dim)
         if ctx.needs_input_grad[2]:
             grad_bias = grad_output.sum(ctx.batch_dim)
 
-        grad_input = grad_output * weight if weight is not None else grad_output
-        grad_input = (
-            grad_input
-            - torch.mean(grad_input, dim=ctx.aggregate_dim, keepdim=True)
-            - torch.mean(grad_input * input_normed, dim=ctx.aggregate_dim, keepdim=True)
-            * input_normed
-        ) / input_var
         return grad_input, grad_weight, grad_bias, None, None, None
 
 
@@ -60,7 +66,7 @@ class LayerNorm(nn.Module):
             raise TypeError(
                 f"normalized_shape must be int, list, or torch.Size, got {type(normalized_shape)}"
             )
-        self.aggregate_dim = tuple(range(-len(self.normalized_shape), 0))
+        self.agg_dim = tuple(range(-len(self.normalized_shape), 0))
         self.eps = float(eps)
         self.weight = None
         self.bias = None
@@ -78,7 +84,7 @@ class LayerNorm(nn.Module):
             input,
             self.weight,
             self.bias,
-            self.aggregate_dim,
+            self.agg_dim,
             self.normalized_shape,
             self.eps,
         )
