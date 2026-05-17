@@ -27,11 +27,11 @@ class LayerNormFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        (input, mean, rstd, weight) = ctx.saved_tensors
+        input, mean, rstd, weight = ctx.saved_tensors
         normed_input = (input - mean) * rstd
         grad_input, grad_weight, grad_bias = None, None, None
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output * weight if weight is not None else grad_output
+            grad_input = grad_output if weight is None else grad_output * weight
             grad_input = (
                 grad_input
                 - torch.mean(grad_input, dim=ctx.agg_dim, keepdim=True)
@@ -93,12 +93,32 @@ class LayerNorm(nn.Module):
 class RMSNormFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, normalized_shape, weight, eps):
-        pass
+        agg_dim = tuple(range(-len(normalized_shape), 0))
+        rms_sq = torch.mean(input * input, dim=agg_dim, keepdim=True)
+        default_eps = torch.finfo(torch.promote_types(input.dtype, torch.float32)).eps
+        rstd = torch.rsqrt(rms_sq + default_eps if eps is None else rms_sq + eps)
+        out = input * rstd if weight is None else input * rstd * weight
+
+        if any(ctx.needs_input_grad):
+            ctx.save_for_backward(input, rstd, weight)
+            ctx.agg_dim = agg_dim
+            ctx.batch_dim = tuple(range(input.dim() - len(normalized_shape)))
+        return out
 
     @staticmethod
     def backward(ctx, grad_output):
+        input, rstd, weight = ctx.saved_tensors
+        normed_input = input * rstd
         grad_input, grad_weight = None, None
-
+        if ctx.needs_input_grad[0]:
+            grad_input = grad_output if weight is None else grad_output * weight
+            grad_input = (
+                grad_input
+                - torch.mean(grad_input * normed_input, dim=ctx.agg_dim, keepdim=True)
+                * normed_input
+            ) * rstd
+        if ctx.needs_input_grad[2]:
+            grad_weight = (grad_output * normed_input).sum(dim=ctx.batch_dim)
         return grad_input, None, grad_weight, None
 
 
@@ -133,5 +153,5 @@ class RMSNorm(nn.Module):
                 torch.ones(self.normalized_shape, device=device, dtype=dtype)
             )
 
-    def foward(self, input):
+    def forward(self, input):
         return rms_norm(input, self.normalized_shape, self.weight, self.eps)
