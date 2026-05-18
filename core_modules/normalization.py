@@ -161,7 +161,9 @@ class GroupNormFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, num_groups, weight, bias, eps):
         N, C, F = input.shape[0], input.shape[1], input.shape[2:]
-        input_view = input.view((N, num_groups, C // num_groups) + F)
+        # use reshape instead of view as view will break on non-contiguous input, e.g.
+        # transpose or permute, reshape will work always and copy only when needed.
+        input_view = input.reshape((N, num_groups, C // num_groups) + F)
         agg_dim = tuple(range(2, input_view.dim()))
         var, mean = torch.var_mean(input_view, dim=agg_dim, correction=0, keepdim=True)
         rstd = torch.rsqrt(var + eps)
@@ -177,7 +179,7 @@ class GroupNormFunction(torch.autograd.Function):
             ctx.save_for_backward(input_view, mean, rstd, weight)
             ctx.agg_dim = agg_dim
             ctx.affine_shape = affine_shape
-        return out.view_as(input)
+        return out.reshape_as(input)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -185,7 +187,7 @@ class GroupNormFunction(torch.autograd.Function):
         normed_input = (input - mean) * rstd
         grad_input, grad_weight, grad_bias = None, None, None
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output.view_as(input)
+            grad_input = grad_output.reshape_as(input)
             if weight is not None:
                 grad_input = grad_input * weight.view(ctx.affine_shape)
             grad_input = (
@@ -194,11 +196,11 @@ class GroupNormFunction(torch.autograd.Function):
                 - torch.mean(grad_input * normed_input, dim=ctx.agg_dim, keepdim=True)
                 * normed_input
             ) * rstd
-            grad_input = grad_input.view_as(grad_output)
+            grad_input = grad_input.reshape_as(grad_output)
 
         batch_dim = (0,) + tuple(range(2, grad_output.dim()))
         if ctx.needs_input_grad[2]:
-            grad_weight = (grad_output * normed_input.view_as(grad_output)).sum(
+            grad_weight = (grad_output * normed_input.reshape_as(grad_output)).sum(
                 dim=batch_dim
             )
         if ctx.needs_input_grad[3]:
