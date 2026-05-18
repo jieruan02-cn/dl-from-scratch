@@ -155,3 +155,53 @@ class RMSNorm(nn.Module):
 
     def forward(self, input):
         return rms_norm(input, self.normalized_shape, self.weight, self.eps)
+
+
+class GroupNormFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, num_groups, weight, bias, eps):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_input, grad_weight, grad_bias = None, None, None
+        if ctx.needs_input_grad[0]:
+            pass
+        if ctx.needs_input_grad[2]:
+            pass
+        if ctx.needs_input_grad[3]:
+            pass
+        return grad_input, None, grad_weight, grad_bias, None
+
+
+def group_norm(input, num_groups, weight=None, bias=None, eps=1e-05):
+    return GroupNormFunction.apply(input, num_groups, weight, bias, eps)
+
+
+class GroupNorm(nn.Module):
+    def __init__(
+        self,
+        num_groups,
+        num_channels,
+        eps=1e-05,
+        affine=True,
+        device=None,
+        dtype=None,
+        *,
+        bias=True,
+    ):
+        super().__init__()
+        self.num_groups = num_groups
+        self.eps = float(eps)
+        self.weight, self.bias = None, None
+        if affine:
+            self.weight = nn.Parameter(
+                torch.ones(num_channels, device=device, dtype=dtype)
+            )
+            if bias:
+                self.bias = nn.Parameter(
+                    torch.zeros(num_channels, device=device, dtype=dtype)
+                )
+
+    def forward(self, input):
+        return group_norm(input, self.num_groups, self.weight, self.bias, self.eps)
