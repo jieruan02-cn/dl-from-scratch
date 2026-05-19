@@ -248,7 +248,8 @@ class BatchNormFunction(torch.autograd.Function):
     # for eval() model. One exception is BN and Dropout, thus the trainning flag is
     # needed to distinguish the backward run, as mu and var are fixed in BN.eval().
     def forward(ctx, input, mean, var, weight, bias, training, eps):
-        out = (input - mean) * torch.rsqrt(var + eps)
+        rstd = torch.rsqrt(var + eps)
+        out = (input - mean) * rstd
         affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
         if weight is not None:
             out = out * weight.reshape(affine_shape)
@@ -258,7 +259,7 @@ class BatchNormFunction(torch.autograd.Function):
         if any(ctx.needs_input_grad):
             ctx.eps = eps
             ctx.affine_shape = affine_shape
-            ctx.save_for_backward(input, mean, var, weight)
+            ctx.save_for_backward(input, mean, rstd, weight)
             ctx.training = training
         return out
 
@@ -267,8 +268,7 @@ class BatchNormFunction(torch.autograd.Function):
         grad_input, grad_weight, grad_bias = None, None, None
 
         if any(ctx.needs_input_grad):
-            input, mean, var, weight = ctx.saved_tensors
-            rstd = torch.rsqrt(var + ctx.eps)
+            input, mean, rstd, weight = ctx.saved_tensors
             normed_input = (input - mean) * rstd
             reduce_dims = (0,) + tuple(range(2, grad_output.dim()))
 
@@ -310,10 +310,13 @@ def batch_norm(
         reduce_dims = (0,) + tuple(range(2, input.dim()))
         var, mean = torch.var_mean(input, dim=reduce_dims, correction=0)
         if running_mean is not None:
-            running_mean += momentum * (mean - running_mean)
+            # Calling detach() to cut running stat out of the graph, as var, mean comes
+            # from input which requires_grad = True.
+            running_mean.mul_(1 - momentum).add_(mean.detach(), alpha=momentum)
         if running_var is not None:
-            unbiased_var = torch.var(input, dim=reduce_dims)
-            running_var += momentum * (unbiased_var - running_var)
+            # Avoid recompute unbiased_var.
+            unbiased_var = var / (1.0 - 1.0 / (input.numel() // input.shape[1]))
+            running_var.mul_(1 - momentum).add_(unbiased_var.detach(), alpha=momentum)
     else:
         mean, var = running_mean, running_var
     affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
