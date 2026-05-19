@@ -22,7 +22,7 @@ class LayerNormFunction(torch.autograd.Function):
             # in transformer, so mean + rstd is cheaper than normed_input (N) + rstd
             ctx.save_for_backward(input, mean, rstd, weight)
             ctx.agg_dim = agg_dim
-            ctx.batch_dim = tuple(range(input.dim() - len(normalized_shape)))
+            ctx.batch_dims = tuple(range(input.dim() - len(normalized_shape)))
         return out
 
     @staticmethod
@@ -39,9 +39,9 @@ class LayerNormFunction(torch.autograd.Function):
                 * normed_input
             ) * rstd
         if ctx.needs_input_grad[2]:
-            grad_weight = (grad_output * normed_input).sum(ctx.batch_dim)
+            grad_weight = (grad_output * normed_input).sum(ctx.batch_dims)
         if ctx.needs_input_grad[3]:
-            grad_bias = grad_output.sum(ctx.batch_dim)
+            grad_bias = grad_output.sum(ctx.batch_dims)
 
         return grad_input, None, grad_weight, grad_bias, None
 
@@ -102,7 +102,7 @@ class RMSNormFunction(torch.autograd.Function):
         if any(ctx.needs_input_grad):
             ctx.save_for_backward(input, rstd, weight)
             ctx.agg_dim = agg_dim
-            ctx.batch_dim = tuple(range(input.dim() - len(normalized_shape)))
+            ctx.batch_dims = tuple(range(input.dim() - len(normalized_shape)))
         return out
 
     @staticmethod
@@ -118,7 +118,7 @@ class RMSNormFunction(torch.autograd.Function):
                 * normed_input
             ) * rstd
         if ctx.needs_input_grad[2]:
-            grad_weight = (grad_output * normed_input).sum(dim=ctx.batch_dim)
+            grad_weight = (grad_output * normed_input).sum(dim=ctx.batch_dims)
         return grad_input, None, grad_weight, None
 
 
@@ -198,13 +198,13 @@ class GroupNormFunction(torch.autograd.Function):
             ) * rstd
             grad_input = grad_input.reshape_as(grad_output)
 
-        batch_dim = (0,) + tuple(range(2, grad_output.dim()))
+        batch_dims = (0,) + tuple(range(2, grad_output.dim()))
         if ctx.needs_input_grad[2]:
             grad_weight = (grad_output * normed_input.reshape_as(grad_output)).sum(
-                dim=batch_dim
+                dim=batch_dims
             )
         if ctx.needs_input_grad[3]:
-            grad_bias = grad_output.sum(dim=batch_dim)
+            grad_bias = grad_output.sum(dim=batch_dims)
         return grad_input, None, grad_weight, grad_bias, None
 
 
@@ -241,14 +241,58 @@ class GroupNorm(nn.Module):
         return group_norm(input, self.num_groups, self.weight, self.bias, self.eps)
 
 
-class BatchNormFunction(torch.augograd.Function):
+class BatchNormFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, mean, var, weight, bias, eps):
-        pass
+    # the training argument is needed to distinguish BN.eval() and BN.train(), for most
+    # modules, their eval() and train() behaves the same, and backward() shouldn't run
+    # for eval() model. One exception is BN and Dropout, thus the trainning flag is
+    # needed to distinguish the backward run, as mu and var are fixed in BN.eval().
+    def forward(ctx, input, mean, var, weight, bias, training, eps):
+        out = (input - mean) * torch.rsqrt(var + eps)
+        affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
+        if weight is not None:
+            out = out * weight.reshape(affine_shape)
+        if bias is not None:
+            out = out + bias.reshape(affine_shape)
+
+        if any(ctx.needs_input_grad):
+            ctx.eps = eps
+            ctx.affine_shape = affine_shape
+            ctx.save_for_backward(input, mean, var, weight)
+            ctx.training = training
+        return out
 
     @staticmethod
     def backward(ctx, grad_output):
-        pass
+        grad_input, grad_weight, grad_bias = None, None, None
+
+        if any(ctx.needs_input_grad):
+            input, mean, var, weight = ctx.saved_tensors
+            rstd = torch.rsqrt(var + ctx.eps)
+            normed_input = (input - mean) * rstd
+            reduce_dims = (0,) + tuple(range(2, grad_output.dim()))
+
+        if ctx.needs_input_grad[0]:
+            grad_input = grad_output * rstd
+            if weight is not None:
+                grad_input = grad_input * weight.reshape(ctx.affine_shape)
+            if ctx.training:
+                # dim = reduce_dims as average is over not just the batch dim, for 3D/4D/5D,
+                # all remaining dimensions are essentially treated as one.
+                grad_input = (
+                    grad_input
+                    - torch.mean(grad_input, dim=reduce_dims, keepdim=True)
+                    - torch.mean(
+                        grad_input * normed_input, dim=reduce_dims, keepdim=True
+                    )
+                    * normed_input
+                )
+
+        if ctx.needs_input_grad[3]:
+            grad_weight = (grad_output * normed_input).sum(dim=reduce_dims)
+        if ctx.needs_input_grad[4]:
+            grad_bias = grad_output.sum(dim=reduce_dims)
+        return grad_input, None, None, grad_weight, grad_bias, None, None
 
 
 def batch_norm(
@@ -263,15 +307,25 @@ def batch_norm(
 ):
 
     if training or running_mean is None or running_var is None:
-        mean, var = torch.var_mean(input, dim=0, correction=0, keepdim=True)
+        reduce_dims = (0,) + tuple(range(2, input.dim()))
+        var, mean = torch.var_mean(input, dim=reduce_dims, correction=0)
         if running_mean is not None:
             running_mean += momentum * (mean - running_mean)
         if running_var is not None:
-            unbiased_var = torch.var(input, dim=0, keepdim=True)
+            unbiased_var = torch.var(input, dim=reduce_dims)
             running_var += momentum * (unbiased_var - running_var)
     else:
         mean, var = running_mean, running_var
-    return BatchNormFunction.apply(input, mean, var, weight, bias, eps)
+    affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
+    return BatchNormFunction.apply(
+        input,
+        mean.reshape(affine_shape),
+        var.reshape(affine_shape),
+        weight,
+        bias,
+        training,
+        eps,
+    )
 
 
 class _BatchNorm(nn.Module):
@@ -292,16 +346,26 @@ class _BatchNorm(nn.Module):
         self.eps = eps
         self.momentum = momentum
         self.weight, self.bias = None, None
+        config = {"device": device, "dtype": dtype}
         if affine:
-            config = {"device": device, "dtype": dtype}
             self.weight = nn.Parameter(torch.ones((num_features,), **config))
             if bias:
                 self.bias = nn.Parameter(torch.zeros((num_features,), **config))
 
-        self.running_mean, self.running_var = None, None
-        if track_running_stats:
-            self.running_mean = 0.0
-            self.running_var = 0.0
+        # register_buffer ensures the tensor moves with the modules and saved in the
+        # state_dict, which simple tensor construction don't. neither are tracked by
+        # optimizer. mainly used for fixed, non-learnable parameters, e.g. positional
+        # encodings, BN running stat. directly define tensor is for throwaway tensors
+        # inside the forward pass.
+        self.register_buffer(
+            "running_mean",
+            torch.zeros((num_features,), **config) if track_running_stats else None,
+        )
+        # var initialized to 1.0 to avoid exploading variance.
+        self.register_buffer(
+            "running_var",
+            torch.ones((num_features,), **config) if track_running_stats else None,
+        )
 
     def forward(self, input):
         self._check_input_dim(input)
@@ -310,6 +374,7 @@ class _BatchNorm(nn.Module):
             self.running_mean,
             self.running_var,
             self.weight,
+            self.bias,
             self.training,
             self.momentum,
             self.eps,
