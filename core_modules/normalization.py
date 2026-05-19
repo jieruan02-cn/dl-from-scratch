@@ -239,3 +239,96 @@ class GroupNorm(nn.Module):
 
     def forward(self, input):
         return group_norm(input, self.num_groups, self.weight, self.bias, self.eps)
+
+
+class BatchNormFunction(torch.augograd.Function):
+    @staticmethod
+    def forward(ctx, input, mean, var, weight, bias, eps):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pass
+
+
+def batch_norm(
+    input,
+    running_mean,
+    running_var,
+    weight=None,
+    bias=None,
+    training=False,
+    momentum=0.1,
+    eps=1e-05,
+):
+
+    if training or running_mean is None or running_var is None:
+        mean, var = torch.var_mean(input, dim=0, correction=0, keepdim=True)
+        if running_mean is not None:
+            running_mean += momentum * (mean - running_mean)
+        if running_var is not None:
+            unbiased_var = torch.var(input, dim=0, keepdim=True)
+            running_var += momentum * (unbiased_var - running_var)
+    else:
+        mean, var = running_mean, running_var
+    return BatchNormFunction.apply(input, mean, var, weight, bias, eps)
+
+
+class _BatchNorm(nn.Module):
+    def __init__(
+        self,
+        num_features,
+        eps=1e-05,
+        momentum=0.1,
+        affine=True,
+        track_running_stats=True,
+        device=None,
+        dtype=None,
+        *,
+        bias=True,
+    ):
+        super().__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.momentum = momentum
+        self.weight, self.bias = None, None
+        if affine:
+            config = {"device": device, "dtype": dtype}
+            self.weight = nn.Parameter(torch.ones((num_features,), **config))
+            if bias:
+                self.bias = nn.Parameter(torch.zeros((num_features,), **config))
+
+        self.running_mean, self.running_var = None, None
+        if track_running_stats:
+            self.running_mean = 0.0
+            self.running_var = 0.0
+
+    def forward(self, input):
+        self._check_input_dim(input)
+        return batch_norm(
+            input,
+            self.running_mean,
+            self.running_var,
+            self.weight,
+            self.training,
+            self.momentum,
+            self.eps,
+        )
+
+
+class BatchNorm1d(_BatchNorm):
+    def _check_input_dim(self, input):
+        if input.dim() not in (2, 3):
+            raise ValueError(f"Expect 2D/3D input, got {input.dim()}D input.")
+
+
+class BatchNorm2d(_BatchNorm):
+    def _check_input_dim(self, input):
+        if input.dim() != 4:
+            raise ValueError(f"Expect 4D input, got {input.dim()}D input.")
+
+
+class BatchNorm3d(_BatchNorm):
+    def _check_input_dim(self, input):
+        if input.dim() != 5:
+            raise ValueError(f"Expect 5D input, got {input.dim()}D input.")
