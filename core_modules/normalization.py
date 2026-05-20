@@ -258,10 +258,9 @@ class BatchNormFunction(torch.autograd.Function):
             out = out + bias.reshape(affine_shape)
 
         if any(ctx.needs_input_grad):
-            ctx.eps = eps
             ctx.affine_shape = affine_shape
-            ctx.save_for_backward(input, mean, rstd, weight)
             ctx.training = training
+            ctx.save_for_backward(input, mean, rstd, weight)
         return out
 
     @staticmethod
@@ -403,6 +402,66 @@ class BatchNorm3d(_BatchNorm):
             raise ValueError(f"Expect 5D input, got {input.dim()}D input.")
 
 
+class SyncBatchNormFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, mean, var, weight, bias, training, eps, process_group):
+        rstd = torch.rsqrt(var + eps)
+        out = (input - mean) * rstd
+        affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
+        if weight is not None:
+            out = out * weight.reshape(affine_shape)
+        if bias is not None:
+            out = out + bias.reshape(affine_shape)
+
+        if any(ctx.needs_input_grad):
+            ctx.affine_shape = affine_shape
+            ctx.training = training
+            ctx.process_group = process_group
+            ctx.save_for_backward(input, mean, rstd, weight)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        grad_input, grad_weight, grad_bias = None, None, None
+
+        if any(ctx.needs_input_grad):
+            input, mean, rstd, weight = ctx.saved_tensors
+            normed_input = (input - mean) * rstd
+            reduce_dims = (0,) + tuple(range(2, grad_output.dim()))
+
+        if ctx.needs_input_grad[0]:
+            grad_input = grad_output * rstd
+            if weight is not None:
+                grad_input = grad_input * weight.reshape(ctx.affine_shape)
+            if ctx.training:
+                dy_dot_one = torch.sum(grad_input, dim=reduce_dims, keepdim=True)
+                dist.all_reduce(dy_dot_one, dist.ReduceOp.SUM, ctx.process_group)
+                dy_dot_y = torch.sum(
+                    grad_input * normed_input, dim=reduce_dims, keepdim=True
+                )
+                dist.all_reduce(dy_dot_y, dist.ReduceOp.SUM, ctx.process_group)
+
+                N = torch.tensor(
+                    [grad_output.numel() // grad_output.shape[1]],
+                    device=grad_output.device,
+                )
+                dist.all_reduce(N, dist.ReduceOp.SUM, ctx.process_group)
+                grad_input = grad_input - (dy_dot_one + dy_dot_y * normed_input) / N
+
+        if ctx.needs_input_grad[3]:
+            grad_weight = (grad_output * normed_input).sum(reduce_dims)
+            # # DDP will perform all_reduce() so no need to call again and grad of
+            # # parameters is supposed to be local
+            # dist.all_reduce(grad_weight, dist.ReduceOp.SUM, ctx.process_group)
+        if ctx.needs_input_grad[4]:
+            grad_bias = grad_output.sum(reduce_dims)
+            # # DDP will perform all_reduce() so no need to call again and grad of
+            # # parameters is suppose to be local
+            # dist.all_reduce(grad_bias, dist.ReduceOp.SUM, ctx.process_group)
+
+        return grad_input, None, None, grad_weight, grad_bias, None, None, None
+
+
 class SyncBatchNorm(_BatchNorm):
     def __init__(
         self,
@@ -432,30 +491,39 @@ class SyncBatchNorm(_BatchNorm):
     def forward(self, input):
         if input.dim() < 3:
             raise ValueError(f"Expect at least 3D input, got {input.dim()}D input.")
+
         if self.training or self.running_mean is None or self.running_var is None:
             reduce_dims = (0,) + tuple(range(2, input.dim()))
-            sum = torch.sum(input, dim=reduce_dims)
-            dist.all_reduce(sum, dist.ReduceOp.SUM, self.process_group)
-            square_sum = torch.sum(input * input, dim=reduce_dims)
-            dist.all_reduce(square_sum, dist.ReduceOp.SUM, self.process_group)
             N = torch.tensor([input.numel() // input.shape[1]], device=input.device)
             dist.all_reduce(N, dist.ReduceOp.SUM, self.process_group)
 
+            # called detach first as all_reduce modifies in place, which is forbidden for
+            # tensor with requires_grad = True.
+            sum = torch.sum(input, dim=reduce_dims).detach()
+            dist.all_reduce(sum, dist.ReduceOp.SUM, self.process_group)
             mean = sum / N
-            var = square_sum / N - mean * mean
+
+            affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
+            square_sum = torch.sum(
+                (input - mean.reshape(affine_shape)) ** 2, dim=reduce_dims
+            ).detach()
+            dist.all_reduce(square_sum, dist.ReduceOp.SUM, self.process_group)
+            var = square_sum / N
+
             if self.running_mean is not None:
                 self.running_mean.mul_(1 - self.momentum).add_(
-                    mean.detach(), alpha=self.momentum
+                    mean, alpha=self.momentum
                 )
             if self.running_var is not None:
                 unbiased_var = var * N / (N - 1)
                 self.running_var.mul_(1 - self.momentum).add_(
-                    unbiased_var.detach(), alpha=self.momentum
+                    unbiased_var, alpha=self.momentum
                 )
         else:
             mean, var = self.running_mean, self.running_var
+
         affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
-        return BatchNormFunction.apply(
+        return SyncBatchNormFunction.apply(
             input,
             mean.reshape(affine_shape),
             var.reshape(affine_shape),
@@ -463,4 +531,5 @@ class SyncBatchNorm(_BatchNorm):
             self.bias,
             self.training,
             self.eps,
+            self.process_group,
         )
