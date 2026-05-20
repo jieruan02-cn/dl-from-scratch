@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.distributed as dist
 
 
 class LayerNormFunction(torch.autograd.Function):
@@ -400,3 +401,66 @@ class BatchNorm3d(_BatchNorm):
     def _check_input_dim(self, input):
         if input.dim() != 5:
             raise ValueError(f"Expect 5D input, got {input.dim()}D input.")
+
+
+class SyncBatchNorm(_BatchNorm):
+    def __init__(
+        self,
+        num_features,
+        eps=1e-05,
+        momentum=0.1,
+        affine=True,
+        track_running_stats=True,
+        process_group=None,
+        device=None,
+        dtype=None,
+        *,
+        bias=True,
+    ):
+        super().__init__(
+            num_features,
+            eps=eps,
+            momentum=momentum,
+            affine=affine,
+            track_running_stats=track_running_stats,
+            device=device,
+            dtype=dtype,
+            bias=bias,
+        )
+        self.process_group = process_group
+
+    def forward(self, input):
+        if input.dim() < 3:
+            raise ValueError(f"Expect at least 3D input, got {input.dim()}D input.")
+        if self.training or self.running_mean is None or self.running_var is None:
+            reduce_dims = (0,) + tuple(range(2, input.dim()))
+            sum = torch.sum(input, dim=reduce_dims)
+            dist.all_reduce(sum, dist.ReduceOp.SUM, self.process_group)
+            square_sum = torch.sum(input * input, dim=reduce_dims)
+            dist.all_reduce(square_sum, dist.ReduceOp.SUM, self.process_group)
+            N = torch.tensor([input.numel() // input.shape[1]], device=input.device)
+            dist.all_reduce(N, dist.ReduceOp.SUM, self.process_group)
+
+            mean = sum / N
+            var = square_sum / N - mean * mean
+            if self.running_mean is not None:
+                self.running_mean.mul_(1 - self.momentum).add_(
+                    mean.detach(), alpha=self.momentum
+                )
+            if self.running_var is not None:
+                unbiased_var = var * N / (N - 1)
+                self.running_var.mul_(1 - self.momentum).add_(
+                    unbiased_var.detach(), alpha=self.momentum
+                )
+        else:
+            mean, var = self.running_mean, self.running_var
+        affine_shape = (input.shape[1],) + (1,) * (input.dim() - 2)
+        return BatchNormFunction.apply(
+            input,
+            mean.reshape(affine_shape),
+            var.reshape(affine_shape),
+            self.weight,
+            self.bias,
+            self.training,
+            self.eps,
+        )
