@@ -64,17 +64,23 @@ class HuberLossFunction(torch.autograd.Function):
         if weight is not None:
             out = out * weight
 
-        if ctx.needs_input_grad[0]:
+        if any(ctx.needs_input_grad):
             ctx.reduction = reduction
             ctx.delta = delta
             ctx.has_weight = weight is not None
-            # save diff instead of input, target compared to activation unit as residual
-            # often makes saving input, target saving overhead ~0, but in loss, saving
-            # diff is cheaper.
+            # A tensor T is alive in memory at backward time iff any one of the following holds a reference:
+            # 1. Python user scope — pred = model(x) binds pred as a local.
+            # 2. An upstream op's save_for_backward — keeps T alive via its SavedVariable.
+            # 3. Our own save_for_backward — the choice we're making.
+            # If (1) or (2) already holds, then (3) is free. Otherwise (3) costs T.numel() * dtype_size
+            #
+            # target is typically saved by 1), thus saving input, target usually wins in
+            # memeory as if 1) or 2) happens to input (when people do pred = model(x)),
+            # but saving diff is clearer in code and predictable in memory usage.
             if weight is None:
-                ctx.save_for_backward(diff)
+                ctx.save_for_backward(input, target)
             else:
-                ctx.save_for_backward(diff, weight)
+                ctx.save_for_backward(input, target, weight)
 
         if reduction == "none":
             return out
@@ -88,19 +94,22 @@ class HuberLossFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         if ctx.has_weight:
-            diff, weight = ctx.saved_tensors
+            input, target, weight = ctx.saved_tensors
         else:
-            (diff,) = ctx.saved_tensors
+            input, target = ctx.saved_tensors
             weight = None
-        abs_diff = torch.abs(diff)
-        grad_input = grad_output * torch.where(
-            abs_diff < ctx.delta, diff, torch.sign(diff) * ctx.delta
-        )
+        # Use clamp instead of where to save ops more,
+        # Option 1: grad_output * torch.where(abs_diff < ctx.delta, diff, torch.sign(diff) * ctx.delta) - 6 kernels
+        # Option 2: grad_output * diff.clamp(-ctx.delta, ctx.delta) - 2 kernels as clamp is fused into 1.
+        diff = input - target
+        grad_input = grad_output * diff.clamp(-ctx.delta, ctx.delta)
         if weight is not None:
             grad_input = grad_input * weight
         if ctx.reduction == "mean":
             grad_input = grad_input / diff.numel()
-        return grad_input, None, None, None, None
+
+        grad_target = -grad_input if ctx.needs_input_grad[1] else None
+        return grad_input, grad_target, None, None, None
 
 
 def huber_loss(input, target, reduction="mean", delta=1.0, weight=None):

@@ -17,10 +17,22 @@ class LayerNormFunction(torch.autograd.Function):
             out = out + bias
 
         if any(ctx.needs_input_grad):
+            # WRONG reasons gave by Claude:
             # save input instead of normalized input to reduce persistent
             # saved-for-backward state (held across entire forward pass until that
             # layer's backward fires), input is typically needed anyway due to residual
             # in transformer, so mean + rstd is cheaper than normed_input (N) + rstd
+            #
+            # Likely CORRECT reason:
+            # So why does native PyTorch LN save input? Different reason than I gave:
+            # 1. Native is a fused CUDA/Triton kernel where normed is computed
+            # tile-by-tile in registers and never materialized as a full tensor in HBM.
+            # If it saved normed, the kernel would have to additionally materialize it
+            # just to save it. Saving input is free because input is the input — no
+            # extra allocation needed.
+            # 2. For a Python implementation like yours (where out = (input - mean) *
+            # rstd materializes a full N-element tensor anyway), this asymmetry
+            # disappears.
             ctx.save_for_backward(input, mean, rstd, weight)
             ctx.agg_dim = agg_dim
             ctx.batch_dims = tuple(range(input.dim() - len(normalized_shape)))
