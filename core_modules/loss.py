@@ -75,7 +75,7 @@ class HuberLossFunction(torch.autograd.Function):
             # If (1) or (2) already holds, then (3) is free. Otherwise (3) costs T.numel() * dtype_size
             #
             # target is typically saved by 1), thus saving input, target usually wins in
-            # memeory as if 1) or 2) happens to input (when people do pred = model(x)),
+            # memory as if 1) or 2) happens to input (when people do pred = model(x)),
             # but saving diff is clearer in code and predictable in memory usage.
             if weight is None:
                 ctx.save_for_backward(input, target)
@@ -124,3 +124,17 @@ class HuberLoss(nn.Module):
 
     def forward(self, input, target):
         return huber_loss(input, target, self.reduction, self.delta)
+
+
+def smooth_l1_loss(input, target, reduction="mean", beta=1.0):
+    return huber_loss(input, target, reduction, beta) / beta
+
+
+class SmoothL1Loss(nn.Module):
+    def __init__(self, reduction="mean", beta=1.0):
+        super().__init__()
+        self.reduction = reduction
+        self.beta = beta
+
+    def forward(self, input, target):
+        return smooth_l1_loss(input, target, self.reduction, self.beta)
