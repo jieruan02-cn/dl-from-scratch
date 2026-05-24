@@ -140,3 +140,78 @@ class SmoothL1Loss(nn.Module):
 
     def forward(self, input, target):
         return smooth_l1_loss(input, target, self.reduction, self.beta)
+
+
+class BCELossFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, target, weight, reduction):
+        eps = max(torch.finfo(input.dtype).eps, 1e-100)
+        out = -target * torch.log(input.clamp(min=eps)) - (1 - target) * torch.log(
+            (1 - input).clamp(min=eps)
+        )
+        if weight is not None:
+            out = out * weight
+
+        if any(ctx.needs_input_grad):
+            ctx.reduction = reduction
+            ctx.has_weight = weight is not None
+            if weight is None:
+                ctx.save_for_backward(input, target)
+            else:
+                ctx.save_for_backward(input, target, weight)
+
+        if reduction == "none":
+            return out
+        elif reduction == "mean":
+            return torch.mean(out)
+        elif reduction == "sum":
+            return torch.sum(out)
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if ctx.has_weight:
+            input, target, weight = ctx.saved_tensors
+        else:
+            input, target = ctx.saved_tensors
+            weight = None
+
+        eps = max(torch.finfo(input.dtype).eps, 1e-100)
+        clamp_input = input.clamp(min=eps)
+        clamp_1minput = (1 - input).clamp(min=eps)
+        grad_input = (
+            grad_output * (clamp_input - target) / (clamp_input * clamp_1minput)
+        )
+        grad_input = BCELossFunction._post_process(grad_input, weight, ctx.reduction)
+
+        grad_target = None
+        if ctx.needs_input_grad[1]:
+            grad_target = grad_output * torch.log(clamp_1minput / clamp_input)
+            grad_target = BCELossFunction._post_process(
+                grad_target, weight, ctx.reduction
+            )
+        return grad_input, grad_target, None, None
+
+    @staticmethod
+    def _post_process(grad, weight, reduction):
+        out = grad
+        if weight is not None:
+            out = out * weight
+        if reduction == "mean":
+            out = out / out.numel()
+        return out
+
+
+def binary_cross_entropy(input, target, weight=None, reduction="mean"):
+    return BCELossFunction.apply(input, target, weight, reduction)
+
+
+class BCELoss(nn.Module):
+    def __init__(self, weight=None, reduction="mean"):
+        super().__init__()
+        self.weight = weight
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        return binary_cross_entropy(input, target, self.weight, self.reduction)
