@@ -127,6 +127,8 @@ class HuberLoss(nn.Module):
 
 
 def smooth_l1_loss(input, target, reduction="mean", beta=1.0):
+    if beta == 0:
+        return l1_loss(input, target, reduction)
     return huber_loss(input, target, reduction, beta) / beta
 
 
