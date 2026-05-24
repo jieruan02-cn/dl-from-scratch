@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from activation import logsigmoid, sigmoid
 
 
 def mse_loss(input, target, reduction="mean", weight=None):
@@ -142,6 +143,17 @@ class SmoothL1Loss(nn.Module):
         return smooth_l1_loss(input, target, self.reduction, self.beta)
 
 
+def _post_process(grad, weight, reduction):
+    out = grad
+    if grad is None:
+        return out
+    if weight is not None:
+        out = out * weight
+    if reduction == "mean":
+        out = out / out.numel()
+    return out
+
+
 class BCELossFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, target, weight, reduction):
@@ -184,24 +196,13 @@ class BCELossFunction(torch.autograd.Function):
         grad_input = (
             grad_output * (clamp_input - target) / (clamp_input * clamp_1minput)
         )
-        grad_input = BCELossFunction._post_process(grad_input, weight, ctx.reduction)
+        grad_input = _post_process(grad_input, weight, ctx.reduction)
 
         grad_target = None
         if ctx.needs_input_grad[1]:
             grad_target = grad_output * torch.log(clamp_1minput / clamp_input)
-            grad_target = BCELossFunction._post_process(
-                grad_target, weight, ctx.reduction
-            )
+            grad_target = _post_process(grad_target, weight, ctx.reduction)
         return grad_input, grad_target, None, None
-
-    @staticmethod
-    def _post_process(grad, weight, reduction):
-        out = grad
-        if weight is not None:
-            out = out * weight
-        if reduction == "mean":
-            out = out / out.numel()
-        return out
 
 
 def binary_cross_entropy(input, target, weight=None, reduction="mean"):
@@ -221,11 +222,63 @@ class BCELoss(nn.Module):
 class BCEWithLogitLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, target, weight, reduction, pos_weight):
-        pass
+        out = input * (1 - target)
+        log_sig = logsigmoid(input)
+        if pos_weight is None:
+            out = out - log_sig
+        else:
+            out = out - (1 - target + pos_weight * target) * log_sig
+        if weight is not None:
+            out = out * weight
+
+        if any(ctx.needs_input_grad):
+            ctx.reduction = reduction
+            ctx.has_weight = weight is not None
+            ctx.has_pos_weight = pos_weight is not None
+            if ctx.has_weight and ctx.has_pos_weight:
+                ctx.save_for_backward(input, target, weight, pos_weight)
+            elif ctx.has_weight:
+                ctx.save_for_backward(input, target, weight)
+            elif ctx.has_pos_weight:
+                ctx.save_for_backward(input, target, pos_weight)
+            else:
+                ctx.save_for_backward(input, target)
+
+        if reduction == "none":
+            return out
+        elif reduction == "mean":
+            return torch.mean(out)
+        elif reduction == "sum":
+            return torch.sum(out)
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
 
     @staticmethod
     def backward(ctx, grad_output):
-        pass
+        weight, pos_weight = None, None
+        if ctx.has_weight and ctx.has_pos_weight:
+            input, target, weight, pos_weight = ctx.saved_tensors
+        elif ctx.has_weight:
+            input, target, weight = ctx.saved_tensors
+        elif ctx.has_pos_weight:
+            input, target, pos_weight = ctx.saved_tensors
+        else:
+            input, target = ctx.saved_tensors
+
+        if pos_weight is None:
+            grad_input = grad_output * (sigmoid(input) - target)
+            grad_target = -grad_output * input if ctx.needs_input_grad[1] else None
+        else:
+            scale = 1 - target + pos_weight * target
+            grad_input = grad_output * (scale * sigmoid(input) - pos_weight * target)
+            grad_target = (
+                grad_output * ((1 - pos_weight) * logsigmoid(input) - input)
+                if ctx.needs_input_grad[1]
+                else None
+            )
+        grad_input = _post_process(grad_input, weight, ctx.reduction)
+        grad_target = _post_process(grad_target, weight, ctx.reduction)
+        return grad_input, grad_target, None, None, None
 
 
 def binary_cross_entropy_with_logits(
