@@ -12,5 +12,6 @@ data/
 checkpoints/
 wandb/
 .DS_Store
+.vscode/
 CLAUDE.md
 .claude/

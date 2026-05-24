@@ -78,10 +78,7 @@ class HuberLossFunction(torch.autograd.Function):
             # target is typically saved by 1), thus saving input, target usually wins in
             # memory as if 1) or 2) happens to input (when people do pred = model(x)),
             # but saving diff is clearer in code and predictable in memory usage.
-            if weight is None:
-                ctx.save_for_backward(input, target)
-            else:
-                ctx.save_for_backward(input, target, weight)
+            ctx.save_for_backward(input, target, weight)
 
         if reduction == "none":
             return out
@@ -94,11 +91,7 @@ class HuberLossFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        if ctx.has_weight:
-            input, target, weight = ctx.saved_tensors
-        else:
-            input, target = ctx.saved_tensors
-            weight = None
+        input, target, weight = ctx.saved_tensors
         # Use clamp instead of where to save ops more,
         # Option 1: grad_output * torch.where(abs_diff < ctx.delta, diff, torch.sign(diff) * ctx.delta) - 6 kernels
         # Option 2: grad_output * diff.clamp(-ctx.delta, ctx.delta) - 2 kernels as clamp is fused into 1.
@@ -167,10 +160,7 @@ class BCELossFunction(torch.autograd.Function):
         if any(ctx.needs_input_grad):
             ctx.reduction = reduction
             ctx.has_weight = weight is not None
-            if weight is None:
-                ctx.save_for_backward(input, target)
-            else:
-                ctx.save_for_backward(input, target, weight)
+            ctx.save_for_backward(input, target)
 
         if reduction == "none":
             return out
@@ -183,11 +173,7 @@ class BCELossFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        if ctx.has_weight:
-            input, target, weight = ctx.saved_tensors
-        else:
-            input, target = ctx.saved_tensors
-            weight = None
+        input, target, weight = ctx.saved_tensors
 
         # 2. Clamp/gradient inconsistency at the boundary (subtle, possibly intentional).
         eps = max(torch.finfo(input.dtype).tiny, 1e-100)
