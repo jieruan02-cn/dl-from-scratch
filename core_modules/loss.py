@@ -145,7 +145,7 @@ class SmoothL1Loss(nn.Module):
 class BCELossFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, target, weight, reduction):
-        eps = max(torch.finfo(input.dtype).eps, 1e-100)
+        eps = max(torch.finfo(input.dtype).tiny, 1e-100)
         out = -target * torch.log(input.clamp(min=eps)) - (1 - target) * torch.log(
             (1 - input).clamp(min=eps)
         )
@@ -177,7 +177,8 @@ class BCELossFunction(torch.autograd.Function):
             input, target = ctx.saved_tensors
             weight = None
 
-        eps = max(torch.finfo(input.dtype).eps, 1e-100)
+        # 2. Clamp/gradient inconsistency at the boundary (subtle, possibly intentional).
+        eps = max(torch.finfo(input.dtype).tiny, 1e-100)
         clamp_input = input.clamp(min=eps)
         clamp_1minput = (1 - input).clamp(min=eps)
         grad_input = (
