@@ -267,3 +267,42 @@ class BCEWithLogitsLoss(nn.Module):
         return binary_cross_entropy_with_logits(
             input, target, self.weight, self.reduction, self.pos_weight
         )
+
+
+class CrossEntropyFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, target, weight, ignore_index, reduction, label_smoothing):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pass
+
+
+def cross_entropy(
+    input, target, weight=None, ignore_index=-100, reduction="mean", label_smoothing=0.0
+):
+    return CrossEntropyFunction.apply(
+        input, target, weight, ignore_index, reduction, label_smoothing
+    )
+
+
+class CrossEntropyLoss(nn.Module):
+    def __init__(
+        self, weight=None, ignore_index=-100, reduction="mean", label_smoothing=0.0
+    ):
+        super().__init__()
+        self.weight = weight
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+        self.label_smoothing = label_smoothing
+
+    def forward(self, input, target):
+        return cross_entropy(
+            input,
+            target,
+            self.weight,
+            self.ignore_index,
+            self.reduction,
+            self.label_smoothing,
+        )
