@@ -219,7 +219,7 @@ class BCELoss(nn.Module):
         return binary_cross_entropy(input, target, self.weight, self.reduction)
 
 
-class BCEWithLogitLossFunction(torch.autograd.Function):
+class BCEWithLogitsLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, target, weight, reduction, pos_weight):
         out = input * (1 - target)
@@ -233,16 +233,7 @@ class BCEWithLogitLossFunction(torch.autograd.Function):
 
         if any(ctx.needs_input_grad):
             ctx.reduction = reduction
-            ctx.has_weight = weight is not None
-            ctx.has_pos_weight = pos_weight is not None
-            if ctx.has_weight and ctx.has_pos_weight:
-                ctx.save_for_backward(input, target, weight, pos_weight)
-            elif ctx.has_weight:
-                ctx.save_for_backward(input, target, weight)
-            elif ctx.has_pos_weight:
-                ctx.save_for_backward(input, target, pos_weight)
-            else:
-                ctx.save_for_backward(input, target)
+            ctx.save_for_backward(input, target, weight, pos_weight)
 
         if reduction == "none":
             return out
@@ -255,15 +246,7 @@ class BCEWithLogitLossFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        weight, pos_weight = None, None
-        if ctx.has_weight and ctx.has_pos_weight:
-            input, target, weight, pos_weight = ctx.saved_tensors
-        elif ctx.has_weight:
-            input, target, weight = ctx.saved_tensors
-        elif ctx.has_pos_weight:
-            input, target, pos_weight = ctx.saved_tensors
-        else:
-            input, target = ctx.saved_tensors
+        input, target, weight, pos_weight = ctx.saved_tensors
 
         if pos_weight is None:
             grad_input = grad_output * (sigmoid(input) - target)
@@ -284,10 +267,10 @@ class BCEWithLogitLossFunction(torch.autograd.Function):
 def binary_cross_entropy_with_logits(
     input, target, weight=None, reduction="mean", pos_weight=None
 ):
-    return BCEWithLogitLossFunction.apply(input, target, weight, reduction, pos_weight)
+    return BCEWithLogitsLossFunction.apply(input, target, weight, reduction, pos_weight)
 
 
-class BCEWithLogitLoss(nn.Module):
+class BCEWithLogitsLoss(nn.Module):
     def __init__(self, weight=None, reduction="mean", pos_weight=None):
         super().__init__()
         self.weight = weight
