@@ -269,6 +269,37 @@ class BCEWithLogitsLoss(nn.Module):
         )
 
 
+def nll_loss(input, target, weight=None, ignore_index=-100, reduction="mean"):
+    dim = 0 if input.dim() == 1 else 1
+    clamp_target = target.clamp(0, input.shape[dim] - 1)
+    out = -input.gather(dim, clamp_target.unsqueeze(dim)).squeeze(dim)
+    target_weight = (target != ignore_index).to(input.dtype)
+    if weight is not None:
+        target_weight = target_weight * weight[clamp_target]
+    out = out * target_weight
+
+    if reduction == "none":
+        return out
+    elif reduction == "mean":
+        weight_sum = torch.sum(target_weight)
+        return 0.0 if weight_sum == 0.0 else torch.sum(out) / weight_sum
+    elif reduction == "sum":
+        return torch.sum(out)
+    else:
+        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+
+class NLLLoss(nn.Module):
+    def __init__(self, weight=None, ignore_index=-100, reduction="mean"):
+        super().__init__()
+        self.weight = weight
+        self.ignore_index = ignore_index
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        return nll_loss(input, target, self.weight, self.ignore_index, self.reduction)
+
+
 class CrossEntropyFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, input, target, weight, ignore_index, reduction, label_smoothing):
