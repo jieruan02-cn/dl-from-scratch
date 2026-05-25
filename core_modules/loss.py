@@ -269,24 +269,58 @@ class BCEWithLogitsLoss(nn.Module):
         )
 
 
-def nll_loss(input, target, weight=None, ignore_index=-100, reduction="mean"):
-    dim = 0 if input.dim() == 1 else 1
-    clamp_target = target.clamp(0, input.shape[dim] - 1)
-    out = -input.gather(dim, clamp_target.unsqueeze(dim)).squeeze(dim)
-    target_weight = (target != ignore_index).to(input.dtype)
-    if weight is not None:
-        target_weight = target_weight * weight[clamp_target]
-    out = out * target_weight
+class NLLLossFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, input, target, weight, ignore_index, reduction):
+        dim = 0 if input.dim() == 1 else 1
+        clamped_target = target.clamp(0, input.shape[dim] - 1)
+        out = -input.gather(dim, clamped_target.unsqueeze(dim)).squeeze(dim)
+        target_weight = (target != ignore_index).to(input.dtype)
+        if weight is not None:
+            target_weight = target_weight * weight[clamped_target]
+        out = out * target_weight
 
-    if reduction == "none":
-        return out
-    elif reduction == "mean":
+        if ctx.needs_input_grad[0]:
+            ctx.dim = dim
+            ctx.input_shape = input.shape
+            ctx.ignore_index = ignore_index
+            ctx.reduction = reduction
+            ctx.num_classes = input.shape[dim]
+            ctx.save_for_backward(target, weight)
+
+        if reduction == "none":
+            return out
+        elif reduction == "mean":
+            weight_sum = torch.sum(target_weight)
+            return 0.0 if weight_sum == 0.0 else torch.sum(out) / weight_sum
+        elif reduction == "sum":
+            return torch.sum(out)
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        target, weight = ctx.saved_tensors
+        clamped_target = target.clamp(0, ctx.num_classes - 1)
+        target_weight = (target != ctx.ignore_index).to(grad_output.dtype)
+        if weight is not None:
+            target_weight = target_weight * weight[clamped_target]
+        grad_input = torch.zeros(
+            ctx.input_shape, device=grad_output.device, dtype=grad_output.dtype
+        )
+        grad_input.scatter_(
+            ctx.dim,
+            index=clamped_target.unsqueeze(ctx.dim),
+            src=-(grad_output * target_weight).unsqueeze(ctx.dim),
+        )
         weight_sum = torch.sum(target_weight)
-        return 0.0 if weight_sum == 0.0 else torch.sum(out) / weight_sum
-    elif reduction == "sum":
-        return torch.sum(out)
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+        if ctx.reduction == "mean" and weight_sum != 0.0:
+            grad_input.div_(weight_sum)
+        return grad_input, None, None, None, None
+
+
+def nll_loss(input, target, weight=None, ignore_index=-100, reduction="mean"):
+    return NLLLossFunction.apply(input, target, weight, ignore_index, reduction)
 
 
 class NLLLoss(nn.Module):
