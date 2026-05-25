@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from activation import logsigmoid, sigmoid
+from activation import logsigmoid, sigmoid, log_softmax, softmax
 
 
 def mse_loss(input, target, reduction="mean", weight=None):
@@ -331,22 +331,95 @@ class NLLLoss(nn.Module):
         return nll_loss(input, target, self.weight, self.ignore_index, self.reduction)
 
 
+def _smooth_target(input, target, dim, label_smoothing):
+    if target.dim() == input.dim():
+        return target
+    scale = 1.0 / input.shape[dim]
+    smoothed_target = torch.full_like(input, label_smoothing * scale)
+    target_view = target.unsqueeze(dim)
+    src = torch.full(
+        target_view.shape,
+        1.0 - (1.0 - scale) * label_smoothing,
+        device=input.device,
+        dtype=input.dtype,
+    )
+    smoothed_target.scatter_(dim=dim, index=target_view, src=src)
+    return smoothed_target
+
+
 class CrossEntropyFunction(torch.autograd.Function):
+    # Because torch.autograd.Function's forward run in torch.no_grad, while normal torch
+    # module's forward doesn't. We choose to compute smoothed target inside Function's
+    # forward for efficiency.
     @staticmethod
-    def forward(ctx, input, target, weight, ignore_index, reduction, label_smoothing):
-        pass
+    def forward(ctx, input, target, weight, reduction, label_smoothing):
+        dim = 0 if input.dim() == 1 else 1
+        smoothed_target = _smooth_target(input, target, dim, label_smoothing)
+        out = -log_softmax(input, dim) * smoothed_target
+
+        weight_shape, num_classes = None, input.shape[dim]
+        weight_sum = input.numel() // num_classes
+        if weight is not None:
+            weight_shape = [1] * input.dim()
+            weight_shape[dim] = num_classes
+            weight_shape = tuple(weight_shape)
+            out.mul_(weight.reshape(weight_shape))
+            if target.dim() < input.dim():
+                weight_sum = torch.sum(weight[target])
+
+        if ctx.needs_input_grad[0]:
+            ctx.dim = dim
+            ctx.reduction = reduction
+            ctx.weight_sum = weight_sum
+            ctx.label_smoothing = label_smoothing
+            ctx.weight_shape = weight_shape
+            weight_view = weight if weight is None else weight.reshape(ctx.weight_shape)
+            ctx.save_for_backward(input, target, weight_view)
+
+        if reduction == "none":
+            return torch.sum(out, dim)
+        elif reduction == "mean":
+            return torch.sum(out) / weight_sum
+        elif reduction == "sum":
+            return torch.sum(out)
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
 
     @staticmethod
     def backward(ctx, grad_output):
-        pass
+        if ctx.reduction == "none":
+            grad_output = grad_output.unsqueeze(ctx.dim)
+
+        input, target, weight = ctx.saved_tensors
+        smoothed_target = _smooth_target(input, target, ctx.dim, ctx.label_smoothing)
+        if weight is not None:
+            y_dot_w = torch.sum(smoothed_target * weight, ctx.dim, keepdim=True)
+            grad_input = softmax(input, ctx.dim) * y_dot_w - smoothed_target * weight
+        else:
+            grad_input = softmax(input, ctx.dim) - smoothed_target
+        if ctx.reduction == "mean":
+            grad_input.div_(ctx.weight_sum)
+        grad_input.mul_(grad_output)
+
+        grad_target = None
+        if ctx.needs_input_grad[1]:
+            grad_target = -grad_output * log_softmax(input, ctx.dim)
+            if weight is not None:
+                grad_target.mul_(weight.reshape(ctx.weight_shape))
+            if ctx.reduction == "mean":
+                grad_target.div_(ctx.weight_sum)
+        return grad_input, grad_target, None, None, None
 
 
 def cross_entropy(
     input, target, weight=None, ignore_index=-100, reduction="mean", label_smoothing=0.0
 ):
-    return CrossEntropyFunction.apply(
-        input, target, weight, ignore_index, reduction, label_smoothing
-    )
+    if target.dim() < input.dim() and label_smoothing == 0.0:
+        dim = 0 if input.dim() == 1 else 1
+        return nll_loss(
+            log_softmax(input, dim), target, weight, ignore_index, reduction
+        )
+    return CrossEntropyFunction.apply(input, target, weight, reduction, label_smoothing)
 
 
 class CrossEntropyLoss(nn.Module):
