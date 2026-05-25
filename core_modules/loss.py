@@ -98,9 +98,9 @@ class HuberLossFunction(torch.autograd.Function):
         diff = input - target
         grad_input = grad_output * diff.clamp(-ctx.delta, ctx.delta)
         if weight is not None:
-            grad_input = grad_input * weight
+            grad_input.mul_(weight)
         if ctx.reduction == "mean":
-            grad_input = grad_input / diff.numel()
+            grad_input.div_(diff.numel())
 
         grad_target = -grad_input if ctx.needs_input_grad[1] else None
         return grad_input, grad_target, None, None, None
@@ -137,14 +137,13 @@ class SmoothL1Loss(nn.Module):
 
 
 def _post_process(grad, weight, reduction):
-    out = grad
     if grad is None:
-        return out
+        return grad
     if weight is not None:
-        out = out * weight
+        grad.mul_(weight)
     if reduction == "mean":
-        out = out / out.numel()
-    return out
+        grad.div_(grad.numel())
+    return grad
 
 
 class BCELossFunction(torch.autograd.Function):
@@ -291,8 +290,7 @@ class NLLLossFunction(torch.autograd.Function):
         if reduction == "none":
             return out
         elif reduction == "mean":
-            weight_sum = torch.sum(target_weight)
-            return 0.0 if weight_sum == 0.0 else torch.sum(out) / weight_sum
+            return torch.sum(out) / torch.sum(target_weight)
         elif reduction == "sum":
             return torch.sum(out)
         else:
@@ -313,9 +311,8 @@ class NLLLossFunction(torch.autograd.Function):
             index=clamped_target.unsqueeze(ctx.dim),
             src=-(grad_output * target_weight).unsqueeze(ctx.dim),
         )
-        weight_sum = torch.sum(target_weight)
-        if ctx.reduction == "mean" and weight_sum != 0.0:
-            grad_input.div_(weight_sum)
+        if ctx.reduction == "mean":
+            grad_input.div_(torch.sum(target_weight))
         return grad_input, None, None, None, None
 
 
