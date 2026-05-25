@@ -54,7 +54,7 @@ class L1Loss(nn.Module):
 # on indicator function and increase number of ops.
 class HuberLossFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, target, reduction="mean", delta=1.0, weight=None):
+    def forward(input, target, reduction="mean", delta=1.0, weight=None):
         diff = input - target
         abs_diff = torch.abs(diff)
         out = torch.where(
@@ -65,10 +65,21 @@ class HuberLossFunction(torch.autograd.Function):
         if weight is not None:
             out = out * weight
 
+        if reduction == "none":
+            return out
+        elif reduction == "mean":
+            return torch.mean(out)
+        elif reduction == "sum":
+            return torch.sum(out)
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
         if any(ctx.needs_input_grad):
+            input, target, reduction, delta, weight = inputs
             ctx.reduction = reduction
             ctx.delta = delta
-            ctx.has_weight = weight is not None
             # A tensor T is alive in memory at backward time iff any one of the following holds a reference:
             # 1. Python user scope — pred = model(x) binds pred as a local.
             # 2. An upstream op's save_for_backward — keeps T alive via its SavedVariable.
@@ -79,15 +90,6 @@ class HuberLossFunction(torch.autograd.Function):
             # memory as if 1) or 2) happens to input (when people do pred = model(x)),
             # but saving diff is clearer in code and predictable in memory usage.
             ctx.save_for_backward(input, target, weight)
-
-        if reduction == "none":
-            return out
-        elif reduction == "mean":
-            return torch.mean(out)
-        elif reduction == "sum":
-            return torch.sum(out)
-        else:
-            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -148,18 +150,13 @@ def _post_process(grad, weight, reduction):
 
 class BCELossFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, target, weight, reduction):
+    def forward(input, target, weight, reduction):
         eps = max(torch.finfo(input.dtype).tiny, 1e-100)
         out = -target * torch.log(input.clamp(min=eps)) - (1 - target) * torch.log(
             (1 - input).clamp(min=eps)
         )
         if weight is not None:
             out = out * weight
-
-        if any(ctx.needs_input_grad):
-            ctx.reduction = reduction
-            ctx.has_weight = weight is not None
-            ctx.save_for_backward(input, target)
 
         if reduction == "none":
             return out
@@ -169,6 +166,13 @@ class BCELossFunction(torch.autograd.Function):
             return torch.sum(out)
         else:
             raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        if any(ctx.needs_input_grad):
+            input, target, weight, reduction = inputs
+            ctx.reduction = reduction
+            ctx.save_for_backward(input, target, weight)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -206,7 +210,7 @@ class BCELoss(nn.Module):
 
 class BCEWithLogitsLossFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, target, weight, reduction, pos_weight):
+    def forward(input, target, weight, reduction, pos_weight):
         out = input * (1 - target)
         log_sig = logsigmoid(input)
         if pos_weight is None:
@@ -216,10 +220,6 @@ class BCEWithLogitsLossFunction(torch.autograd.Function):
         if weight is not None:
             out = out * weight
 
-        if any(ctx.needs_input_grad):
-            ctx.reduction = reduction
-            ctx.save_for_backward(input, target, weight, pos_weight)
-
         if reduction == "none":
             return out
         elif reduction == "mean":
@@ -228,6 +228,13 @@ class BCEWithLogitsLossFunction(torch.autograd.Function):
             return torch.sum(out)
         else:
             raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        if any(ctx.needs_input_grad):
+            input, target, weight, reduction, pos_weight = inputs
+            ctx.reduction = reduction
+            ctx.save_for_backward(input, target, weight, pos_weight)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -270,7 +277,7 @@ class BCEWithLogitsLoss(nn.Module):
 
 class NLLLossFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, target, weight, ignore_index, reduction):
+    def forward(input, target, weight, ignore_index, reduction):
         dim = 0 if input.dim() == 1 else 1
         clamped_target = target.clamp(0, input.shape[dim] - 1)
         out = -input.gather(dim, clamped_target.unsqueeze(dim)).squeeze(dim)
@@ -278,14 +285,6 @@ class NLLLossFunction(torch.autograd.Function):
         if weight is not None:
             target_weight = target_weight * weight[clamped_target]
         out = out * target_weight
-
-        if ctx.needs_input_grad[0]:
-            ctx.dim = dim
-            ctx.input_shape = input.shape
-            ctx.ignore_index = ignore_index
-            ctx.reduction = reduction
-            ctx.num_classes = input.shape[dim]
-            ctx.save_for_backward(target, weight)
 
         if reduction == "none":
             return out
@@ -295,6 +294,17 @@ class NLLLossFunction(torch.autograd.Function):
             return torch.sum(out)
         else:
             raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        if ctx.needs_input_grad[0]:
+            input, target, weight, ignore_index, reduction = inputs
+            ctx.dim = 0 if input.dim() == 1 else 1
+            ctx.input_shape = input.shape
+            ctx.ignore_index = ignore_index
+            ctx.reduction = reduction
+            ctx.num_classes = input.shape[ctx.dim]
+            ctx.save_for_backward(target, weight)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -348,12 +358,26 @@ def _smooth_target(input, target, dim, label_smoothing):
 
 
 class CrossEntropyFunction(torch.autograd.Function):
-    # Because torch.autograd.Function's forward run in torch.no_grad, while normal torch
-    # module's forward doesn't. We choose to compute smoothed target inside Function's
-    # forward for efficiency.
     @staticmethod
-    def forward(ctx, input, target, weight, reduction, label_smoothing):
-        dim = 0 if input.dim() == 1 else 1
+    def forward(ctx, input, target, weight, ignore_index, reduction, label_smoothing):
+        dim, num_classes = 0 if input.dim() == 1 else 1, input.shape[dim]
+        if target.dim() < input.dim() and label_smoothing == 0.0:
+            return NLLLossFunction.apply(
+                log_softmax(input, dim), target, weight, ignore_index, reduction
+            )
+        elif target.dim() < input.dim():
+            clamped_target = target.clamp(0, num_classes - 1)
+            target_weight = (target != ignore_index).to(input.dtype)
+            if weight is not None:
+                target_weight.mul_(weight[clamped_target])
+            out = -(1 - label_smoothing) * input.gather(
+                dim, clamped_target.unsqueeze(dim)
+            ).squeeze(dim) - label_smoothing / num_classes * torch.sum(
+                input * target_weight.reshape(), dim=dim
+            )
+        else:
+            pass
+
         smoothed_target = _smooth_target(input, target, dim, label_smoothing)
         out = -log_softmax(input, dim) * smoothed_target
 
@@ -367,7 +391,7 @@ class CrossEntropyFunction(torch.autograd.Function):
             if target.dim() < input.dim():
                 weight_sum = torch.sum(weight[target])
 
-        if ctx.needs_input_grad[0]:
+        if any(ctx.needs_input_grad):
             ctx.dim = dim
             ctx.reduction = reduction
             ctx.weight_sum = weight_sum
@@ -384,6 +408,10 @@ class CrossEntropyFunction(torch.autograd.Function):
             return torch.sum(out)
         else:
             raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -405,7 +433,7 @@ class CrossEntropyFunction(torch.autograd.Function):
         if ctx.needs_input_grad[1]:
             grad_target = -grad_output * log_softmax(input, ctx.dim)
             if weight is not None:
-                grad_target.mul_(weight.reshape(ctx.weight_shape))
+                grad_target.mul_(weight)
             if ctx.reduction == "mean":
                 grad_target.div_(ctx.weight_sum)
         return grad_input, grad_target, None, None, None
@@ -414,12 +442,9 @@ class CrossEntropyFunction(torch.autograd.Function):
 def cross_entropy(
     input, target, weight=None, ignore_index=-100, reduction="mean", label_smoothing=0.0
 ):
-    if target.dim() < input.dim() and label_smoothing == 0.0:
-        dim = 0 if input.dim() == 1 else 1
-        return nll_loss(
-            log_softmax(input, dim), target, weight, ignore_index, reduction
-        )
-    return CrossEntropyFunction.apply(input, target, weight, reduction, label_smoothing)
+    return CrossEntropyFunction.apply(
+        input, target, weight, ignore_index, reduction, label_smoothing
+    )
 
 
 class CrossEntropyLoss(nn.Module):
