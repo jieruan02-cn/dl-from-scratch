@@ -284,7 +284,7 @@ class NLLLossFunction(torch.autograd.Function):
         target_weight = (target != ignore_index).to(input.dtype)
         if weight is not None:
             target_weight = target_weight * weight[clamped_target]
-        out = out * target_weight
+        out.mul_(target_weight)
 
         if reduction == "none":
             return out
@@ -357,52 +357,53 @@ def _smooth_target(input, target, dim, label_smoothing):
     return smoothed_target
 
 
+def _get_weight_shape(input):
+    dim = 0 if input.dim() == 1 else 1
+    weight_shape = [1] * input.dim()
+    weight_shape[dim] = input.shape[dim]
+    return tuple(weight_shape)
+
+
 class CrossEntropyFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, target, weight, ignore_index, reduction, label_smoothing):
-        dim, num_classes = 0 if input.dim() == 1 else 1, input.shape[dim]
-        if target.dim() < input.dim() and label_smoothing == 0.0:
-            return NLLLossFunction.apply(
-                log_softmax(input, dim), target, weight, ignore_index, reduction
-            )
-        elif target.dim() < input.dim():
-            clamped_target = target.clamp(0, num_classes - 1)
-            target_weight = (target != ignore_index).to(input.dtype)
-            if weight is not None:
-                target_weight.mul_(weight[clamped_target])
-            out = -(1 - label_smoothing) * input.gather(
-                dim, clamped_target.unsqueeze(dim)
-            ).squeeze(dim) - label_smoothing / num_classes * torch.sum(
-                input * target_weight.reshape(), dim=dim
-            )
+    def forward(input, target, weight, ignore_index, reduction, label_smoothing):
+        dim = 0 if input.dim() == 1 else 1
+        num_classes = input.shape[dim]
+        weight_shape = _get_weight_shape(input)
+        logp = log_softmax(input, dim)
+        if target.dim() < input.dim():
+            out = NLLLossFunction.apply(logp, target, weight, ignore_index, "none")
+            if label_smoothing > 0.0:
+                out.mul_(1 - label_smoothing)
+                scale = label_smoothing / num_classes
+                mask = torch.arange(0, num_classes, device=input.device)
+                mask = mask.reshape(weight_shape) != ignore_index
+                if weight is None:
+                    out.sub_(scale * torch.sum(logp * mask, dim))
+                else:
+                    weight_view = weight.reshape(weight_shape)
+                    out.sub_(scale * torch.sum(logp * mask * weight_view, dim))
         else:
-            pass
-
-        smoothed_target = _smooth_target(input, target, dim, label_smoothing)
-        out = -log_softmax(input, dim) * smoothed_target
-
-        weight_shape, num_classes = None, input.shape[dim]
-        weight_sum = input.numel() // num_classes
-        if weight is not None:
-            weight_shape = [1] * input.dim()
-            weight_shape[dim] = num_classes
-            weight_shape = tuple(weight_shape)
-            out.mul_(weight.reshape(weight_shape))
-            if target.dim() < input.dim():
-                weight_sum = torch.sum(weight[target])
-
-        if any(ctx.needs_input_grad):
-            ctx.dim = dim
-            ctx.reduction = reduction
-            ctx.weight_sum = weight_sum
-            ctx.label_smoothing = label_smoothing
-            ctx.weight_shape = weight_shape
-            weight_view = weight if weight is None else weight.reshape(ctx.weight_shape)
-            ctx.save_for_backward(input, target, weight_view)
+            if weight is None:
+                out = torch.sum(-logp * target, dim)
+            else:
+                out = torch.sum(-logp * target * weight.reshape(weight_shape), dim)
+            if label_smoothing > 0.0:
+                scale = label_smoothing / num_classes
+                if weight is None:
+                    w_logp = torch.sum(logp, dim)
+                else:
+                    w_logp = torch.sum(logp * weight.reshape(weight_shape), dim)
+                out.mul_(1 - label_smoothing).sub_(scale * w_logp)
 
         if reduction == "none":
-            return torch.sum(out, dim)
+            return out
         elif reduction == "mean":
+            weight_sum = input.numel() // num_classes
+            if weight is not None and target.dim() < input.dim():
+                weight_sum = torch.sum(
+                    weight[target.clamp(0, num_classes - 1)] * (target != ignore_index)
+                )
             return torch.sum(out) / weight_sum
         elif reduction == "sum":
             return torch.sum(out)
@@ -411,10 +412,19 @@ class CrossEntropyFunction(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        pass
+        if any(ctx.needs_input_grad):
+            input, target, weight, ignore_index, reduction, label_smoothing = inputs
+            ctx.ignore_index = ignore_index
+            ctx.reduction = reduction
+            ctx.label_smoothing = label_smoothing
+            ctx.save_for_backward(input, target, weight)
 
     @staticmethod
     def backward(ctx, grad_output):
+        input, target, weight = ctx.saved_tensors
+        if target.dim() < input.dim():
+            pass
+
         if ctx.reduction == "none":
             grad_output = grad_output.unsqueeze(ctx.dim)
 
