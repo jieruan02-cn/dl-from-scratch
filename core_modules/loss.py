@@ -498,15 +498,60 @@ class CrossEntropyLoss(nn.Module):
 class KLDivFunction(torch.autograd.Function):
     @staticmethod
     def forward(input, target, reduction, log_target):
-        pass
+        if log_target:
+            out = target.exp() * (target - input)
+        else:
+            out = torch.xlogy(target, target) - target * input
+
+        if reduction == "mean":
+            return out.mean()
+        elif reduction == "batchmean":
+            return out.sum() / input.size(0)
+        elif reduction == "sum":
+            return out.sum()
+        elif reduction == "none":
+            return out
+        else:
+            raise ValueError(
+                f"Expect reduction to be none/mean/sum/batchmean, got {reduction}."
+            )
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        pass
+        if any(ctx.needs_input_grad):
+            input, target, reduction, log_target = inputs
+            ctx.reduction = reduction
+            ctx.log_target = log_target
+            if ctx.needs_input_grad[1]:
+                ctx.save_for_backward(input, target)
+            else:
+                ctx.save_for_backward(None, target)
 
     @staticmethod
     def backward(ctx, grad_output):
-        pass
+        input, target = ctx.saved_tensors
+        grad_input = None
+        if ctx.needs_input_grad[0]:
+            if ctx.log_target:
+                grad_input = -grad_output * target.exp()
+            else:
+                grad_input = -grad_output * target
+
+        grad_target = None
+        if ctx.needs_input_grad[1]:
+            if ctx.log_target:
+                grad_target = grad_output * target.exp() * (1 + target - input)
+            else:
+                grad_target = grad_output * (1 + target.log() - input)
+
+        if ctx.reduction in ("mean", "batchmean"):
+            denom = target.numel() if ctx.reduction == "mean" else target.size(0)
+            if grad_input is not None:
+                grad_input.div_(denom)
+            if grad_target is not None:
+                grad_target.div_(denom)
+
+        return grad_input, grad_target, None, None
 
 
 def kl_div(input, target, reduction="mean", log_target=False):
