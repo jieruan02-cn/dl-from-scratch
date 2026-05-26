@@ -568,18 +568,100 @@ class KLDivLoss(nn.Module):
         return kl_div(input, target, self.reduction, self.log_target)
 
 
-class CosineEmbeddingLossFunction(torch.autograd.Function):
+class CosineSimilarityFunction(torch.autograd.Function):
     @staticmethod
-    def forward(input1, input2, target, margin, reduction):
-        pass
+    def forward(x1, x2, dim, eps):
+        norm1 = torch.linalg.vector_norm(x1, dim=dim)
+        norm2 = torch.linalg.vector_norm(x2, dim=dim)
+        return (x1 * x2).sum(dim=dim) / (norm1 * norm2).clamp(min=eps)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        pass
+        if any(ctx.needs_input_grad):
+            x1, x2, dim, eps = inputs
+            ctx.dim = dim
+            ctx.eps = eps
+            ctx.save_for_backward(x1, x2, output)
 
     @staticmethod
     def backward(ctx, grad_output):
-        pass
+        x1, x2, output = ctx.saved_tensors
+        norm1 = torch.linalg.vector_norm(x1, dim=ctx.dim, keepdim=True)
+        norm2 = torch.linalg.vector_norm(x2, dim=ctx.dim, keepdim=True)
+
+        grad_x1 = None
+        if ctx.needs_input_grad[0]:
+            grad_x1 = grad_output.unsqueeze(ctx.dim) * torch.where(
+                norm1 * norm2 > ctx.eps,
+                (x2 / norm2 - output.unsqueeze(ctx.dim) * x1 / norm1) / norm1,
+                x2 / ctx.eps,
+            )
+        grad_x2 = None
+        if ctx.needs_input_grad[1]:
+            grad_x2 = grad_output.unsqueeze(ctx.dim) * torch.where(
+                norm1 * norm2 > ctx.eps,
+                (x1 / norm1 - output.unsqueeze(ctx.dim) * x2 / norm2) / norm2,
+                x1 / ctx.eps,
+            )
+
+        return grad_x1, grad_x2, None, None
+
+
+def cosine_similarity(x1, x2, dim=1, eps=1e-8):
+    return CosineSimilarityFunction.apply(x1, x2, dim, eps)
+
+
+class CosineSimilarity(nn.Module):
+    def __init__(self, dim=1, eps=1e-8):
+        super().__init__()
+        self.dim = dim
+        self.eps = eps
+
+    def forward(self, x1, x2):
+        return cosine_similarity(x1, x2, self.dim, self.eps)
+
+
+class CosineEmbeddingLossFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input1, input2, target, margin, reduction):
+        norm1 = torch.linalg.vector_norm(input1, dim=-1)
+        norm2 = torch.linalg.vector_norm(input2, dim=-1)
+        cos_sim = (input1 * input2).sum(dim=-1) / (norm1 * norm2)
+        loss = torch.where(target == 1, 1.0 - cos_sim, torch.max(0.0, cos_sim - margin))
+        if reduction == "mean":
+            return loss.mean()
+        elif reduction == "sum":
+            return loss.sum()
+        elif reduction == "none":
+            return loss
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        if any(ctx.needs_input_grad):
+            input1, input2, target, margin, reduction = inputs
+            ctx.margin = margin
+            ctx.reduction = reduction
+            ctx.save_for_backward(input1, input2, target, output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input1, input2, target, output = ctx.saved_tensors
+        grad_input1 = None
+        if ctx.needs_input_grad[0]:
+            pass
+
+        grad_input2 = None
+        if ctx.needs_input_grad[1]:
+            pass
+
+        if ctx.reduction == "mean":
+            if grad_input1 is not None:
+                grad_input1.div_(grad_input1.numel())
+            if grad_input2 is not None:
+                grad_input2.div_(grad_input2.numel())
+        return grad_input1, grad_input2, None, None, None
 
 
 def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction="mean"):
@@ -588,6 +670,7 @@ def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction="mean"):
 
 class CosineEmbeddingLoss(nn.Module):
     def __init__(self, margin=0.0, reduction="mean"):
+        super().__init__()
         self.margin = margin
         self.reduction = reduction
 
