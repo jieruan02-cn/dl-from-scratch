@@ -566,3 +566,32 @@ class KLDivLoss(nn.Module):
 
     def forward(self, input, target):
         return kl_div(input, target, self.reduction, self.log_target)
+
+
+class CosineEmbeddingLossFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input1, input2, target, margin, reduction):
+        pass
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pass
+
+
+def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction="mean"):
+    return CosineEmbeddingLossFunction.apply(input1, input2, target, margin, reduction)
+
+
+class CosineEmbeddingLoss(nn.Module):
+    def __init__(self, margin=0.0, reduction="mean"):
+        self.margin = margin
+        self.reduction = reduction
+
+    def forward(self, input1, input2, target):
+        return cosine_embedding_loss(
+            input1, input2, target, self.margin, self.reduction
+        )
