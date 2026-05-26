@@ -570,38 +570,40 @@ class KLDivLoss(nn.Module):
 
 class CosineSimilarityFunction(torch.autograd.Function):
     @staticmethod
-    def forward(x1, x2, dim, eps):
-        norm1 = torch.linalg.vector_norm(x1, dim=dim)
-        norm2 = torch.linalg.vector_norm(x2, dim=dim)
-        return (x1 * x2).sum(dim=dim) / (norm1 * norm2).clamp(min=eps)
-
-    @staticmethod
-    def setup_context(ctx, inputs, output):
+    def forward(ctx, x1, x2, dim, eps):
+        norm1 = torch.linalg.vector_norm(x1, dim=dim, keepdim=True)
+        norm2 = torch.linalg.vector_norm(x2, dim=dim, keepdim=True)
+        out = (x1 * x2).sum(dim=dim) / (norm1 * norm2).clamp(min=eps).squeeze(dim)
         if any(ctx.needs_input_grad):
-            x1, x2, dim, eps = inputs
             ctx.dim = dim
             ctx.eps = eps
-            ctx.save_for_backward(x1, x2, output)
+            # Recomputing activations to save memory (Gradient Checkpointing) is a
+            # standard tactic, but you should only do it for massive tensors. norm1,
+            # norm2 are usually (Batch, ), small to save
+            ctx.save_for_backward(x1, x2, norm1, norm2, out)
+        return out
 
     @staticmethod
     def backward(ctx, grad_output):
-        x1, x2, output = ctx.saved_tensors
-        norm1 = torch.linalg.vector_norm(x1, dim=ctx.dim, keepdim=True)
-        norm2 = torch.linalg.vector_norm(x2, dim=ctx.dim, keepdim=True)
+        x1, x2, norm1, norm2, out = ctx.saved_tensors
+
+        mask = norm1 * norm2 > ctx.eps
+        norm_prod = (norm1 * norm2).clamp(min=ctx.eps)
+        cos_sim = out.unsqueeze(ctx.dim)
 
         grad_x1 = None
         if ctx.needs_input_grad[0]:
+            # Clamp norms used in division branch so background computation never
+            # executes a divide-by-zero, even if that branch is ultimately masked out.
+            norm1_sqr = (norm1 * norm1).clamp(min=ctx.eps)
             grad_x1 = grad_output.unsqueeze(ctx.dim) * torch.where(
-                norm1 * norm2 > ctx.eps,
-                (x2 / norm2 - output.unsqueeze(ctx.dim) * x1 / norm1) / norm1,
-                x2 / ctx.eps,
+                mask, x2 / norm_prod - cos_sim * x1 / norm1_sqr, x2 / ctx.eps
             )
         grad_x2 = None
         if ctx.needs_input_grad[1]:
+            norm2_sqr = (norm2 * norm2).clamp(min=ctx.eps)
             grad_x2 = grad_output.unsqueeze(ctx.dim) * torch.where(
-                norm1 * norm2 > ctx.eps,
-                (x1 / norm1 - output.unsqueeze(ctx.dim) * x2 / norm2) / norm2,
-                x1 / ctx.eps,
+                mask, x1 / norm_prod - cos_sim * x2 / norm2_sqr, x1 / ctx.eps
             )
 
         return grad_x1, grad_x2, None, None
