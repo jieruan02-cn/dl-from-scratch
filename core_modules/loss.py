@@ -493,3 +493,31 @@ class CrossEntropyLoss(nn.Module):
             self.reduction,
             self.label_smoothing,
         )
+
+
+class KLDivFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, target, reduction, log_target):
+        pass
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pass
+
+
+def kl_div(input, target, reduction="mean", log_target=False):
+    return KLDivFunction.apply(input, target, reduction, log_target)
+
+
+class KLDivLoss(nn.Module):
+    def __init__(self, reduction="mean", log_target=False):
+        super().__init__()
+        self.reduction = reduction
+        self.log_target = log_target
+
+    def forward(self, input, target):
+        return kl_div(input, target, self.reduction, self.log_target)
