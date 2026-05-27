@@ -623,51 +623,26 @@ class CosineSimilarity(nn.Module):
         return cosine_similarity(x1, x2, self.dim, self.eps)
 
 
-class CosineEmbeddingLossFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(input1, input2, target, margin, reduction):
-        norm1 = torch.linalg.vector_norm(input1, dim=-1)
-        norm2 = torch.linalg.vector_norm(input2, dim=-1)
-        cos_sim = (input1 * input2).sum(dim=-1) / (norm1 * norm2)
-        loss = torch.where(target == 1, 1.0 - cos_sim, torch.max(0.0, cos_sim - margin))
-        if reduction == "mean":
-            return loss.mean()
-        elif reduction == "sum":
-            return loss.sum()
-        elif reduction == "none":
-            return loss
-        else:
-            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
-
-    @staticmethod
-    def setup_context(ctx, inputs, output):
-        if any(ctx.needs_input_grad):
-            input1, input2, target, margin, reduction = inputs
-            ctx.margin = margin
-            ctx.reduction = reduction
-            ctx.save_for_backward(input1, input2, target, output)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        input1, input2, target, output = ctx.saved_tensors
-        grad_input1 = None
-        if ctx.needs_input_grad[0]:
-            pass
-
-        grad_input2 = None
-        if ctx.needs_input_grad[1]:
-            pass
-
-        if ctx.reduction == "mean":
-            if grad_input1 is not None:
-                grad_input1.div_(grad_input1.numel())
-            if grad_input2 is not None:
-                grad_input2.div_(grad_input2.numel())
-        return grad_input1, grad_input2, None, None, None
-
-
 def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction="mean"):
-    return CosineEmbeddingLossFunction.apply(input1, input2, target, margin, reduction)
+    # The compose-over-custom-Function decision is right here. Worth being
+    # explicit about why, so you don't second-guess and rewrite it later: the
+    # only mass-tensors are x1, x2 of shape (N, D), and those are already
+    # saved by the inner CosineSimilarityFunction. Everything downstream —
+    # cos_sim, the where-mask, the clamped output — is shape (N,). A custom
+    # outer Function would save the same (N, D) tensors plus the same tiny
+    # (N,) tensors, with extra code. No win. Custom Functions earn their
+    # complexity when you can collapse intermediates that the autograd tape
+    # would otherwise hold — there's nothing to collapse here.
+    cos_sim = cosine_similarity(input1, input2, dim=-1)
+    out = torch.where(target == 1, 1 - cos_sim, (cos_sim - margin).clamp(min=0.0))
+    if reduction == "mean":
+        return out.mean()
+    elif reduction == "sum":
+        return out.sum()
+    elif reduction == "none":
+        return out
+    else:
+        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
 
 
 class CosineEmbeddingLoss(nn.Module):
