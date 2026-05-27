@@ -595,13 +595,13 @@ class CosineSimilarityFunction(torch.autograd.Function):
         if ctx.needs_input_grad[0]:
             # Clamp norms used in division branch so background computation never
             # executes a divide-by-zero, even if that branch is ultimately masked out.
-            norm1_sqr = (norm1 * norm1).clamp(min=ctx.eps)
+            norm1_sqr = torch.where(mask, norm1 * norm1, torch.ones_like(norm1))
             grad_x1 = grad_output.unsqueeze(ctx.dim) * torch.where(
                 mask, x2 / norm_prod - cos_sim * x1 / norm1_sqr, x2 / ctx.eps
             )
         grad_x2 = None
         if ctx.needs_input_grad[1]:
-            norm2_sqr = (norm2 * norm2).clamp(min=ctx.eps)
+            norm2_sqr = torch.where(mask, norm2 * norm2, torch.ones_like(norm2))
             grad_x2 = grad_output.unsqueeze(ctx.dim) * torch.where(
                 mask, x1 / norm_prod - cos_sim * x2 / norm2_sqr, x1 / ctx.eps
             )
