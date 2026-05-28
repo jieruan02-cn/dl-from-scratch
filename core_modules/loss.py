@@ -767,3 +767,34 @@ class TripletMarginLoss(nn.Module):
             self.swap,
             self.reduction,
         )
+
+
+def ctc_loss(
+    log_probs,
+    targets,
+    input_lengths,
+    target_lengths,
+    blank=0,
+    reduction="mean",
+    zero_infinity=False,
+):
+    pass
+
+
+class CTCLoss(nn.Module):
+    def __init__(self, blank=0, reduction="mean", zero_infinity=False):
+        super().__init__()
+        self.blank = blank
+        self.reduction = reduction
+        self.zero_infinity = zero_infinity
+
+    def forward(self, log_probs, targets, input_lengths, target_lengths):
+        return ctc_loss(
+            log_probs,
+            targets,
+            input_lengths,
+            target_lengths,
+            self.blank,
+            self.reduction,
+            self.zero_infinity,
+        )
