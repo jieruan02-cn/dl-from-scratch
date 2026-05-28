@@ -677,3 +677,52 @@ class MarginRankingLoss(nn.Module):
 
     def forward(self, input1, input2, target):
         return margin_ranking_loss(input1, input2, target, self.margin, self.reduction)
+
+
+def triplet_margin_loss(
+    anchor,
+    positive,
+    negative,
+    margin=1.0,
+    p=2.0,
+    eps=1e-06,
+    swap=False,
+    reduction="mean",
+):
+    d_ap = torch.linalg.vector_norm(anchor - positive + eps, ord=p, dim=-1)
+    d_an = torch.linalg.vector_norm(anchor - negative + eps, ord=p, dim=-1)
+    if swap:
+        d_pn = torch.linalg.vector_norm(positive - negative + eps, ord=p, dim=-1)
+        out = (d_ap - torch.minimum(d_an, d_pn) + margin).clamp(min=0.0)
+    else:
+        out = (d_ap - d_an + margin).clamp(min=0.0)
+    if reduction == "mean":
+        return out.mean()
+    elif reduction == "sum":
+        return out.sum()
+    elif reduction == "none":
+        return out
+    else:
+        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+
+class TripletMarginLoss(nn.Module):
+    def __init__(self, margin=1.0, p=2.0, eps=1e-06, swap=False, reduction="mean"):
+        super().__init__()
+        self.margin = margin
+        self.p = p
+        self.eps = eps
+        self.swap = swap
+        self.reduction = reduction
+
+    def forward(self, anchor, positive, negative):
+        return triplet_margin_loss(
+            anchor,
+            positive,
+            negative,
+            self.margin,
+            self.p,
+            self.eps,
+            self.swap,
+            self.reduction,
+        )
