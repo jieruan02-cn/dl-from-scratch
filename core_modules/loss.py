@@ -679,22 +679,21 @@ class MarginRankingLoss(nn.Module):
         return margin_ranking_loss(input1, input2, target, self.margin, self.reduction)
 
 
-def triplet_margin_loss(
+def triplet_margin_with_distance_loss(
     anchor,
     positive,
     negative,
+    distance_function=None,
     margin=1.0,
-    p=2.0,
-    eps=1e-06,
     swap=False,
     reduction="mean",
 ):
-    d_ap = torch.linalg.vector_norm(anchor - positive, ord=p, dim=-1).clamp(min=eps)
-    d_an = torch.linalg.vector_norm(anchor - negative, ord=p, dim=-1).clamp(min=eps)
+    if distance_function is None:
+        distance_function = nn.functional.pairwise_distance
+    d_ap = distance_function(anchor, positive)
+    d_an = distance_function(anchor, negative)
     if swap:
-        d_pn = torch.linalg.vector_norm(positive - negative, ord=p, dim=-1).clamp(
-            min=eps
-        )
+        d_pn = distance_function(positive, negative)
         out = (d_ap - torch.minimum(d_an, d_pn) + margin).clamp(min=0.0)
     else:
         out = (d_ap - d_an + margin).clamp(min=0.0)
@@ -706,6 +705,46 @@ def triplet_margin_loss(
         return out
     else:
         raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+
+class TripletMarginWithDistanceLoss(nn.Module):
+    def __init__(
+        self, *, distance_function=None, margin=1.0, swap=False, reduction="mean"
+    ):
+        super().__init__()
+        self.distance_function = distance_function
+        self.margin = margin
+        self.swap = swap
+        self.reduction = reduction
+
+    def forward(self, anchor, positive, negative):
+        return triplet_margin_with_distance_loss(
+            anchor,
+            positive,
+            negative,
+            self.distance_function,
+            self.margin,
+            self.swap,
+            self.reduction,
+        )
+
+
+def triplet_margin_loss(
+    anchor,
+    positive,
+    negative,
+    margin=1.0,
+    p=2.0,
+    eps=1e-06,
+    swap=False,
+    reduction="mean",
+):
+    def distance_function(x, y):
+        return torch.linalg.vector_norm(x - y, ord=p, dim=-1).clamp(min=eps)
+
+    return triplet_margin_with_distance_loss(
+        anchor, positive, negative, distance_function, margin, swap, reduction
+    )
 
 
 class TripletMarginLoss(nn.Module):
