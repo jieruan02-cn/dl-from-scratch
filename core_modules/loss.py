@@ -689,10 +689,12 @@ def triplet_margin_loss(
     swap=False,
     reduction="mean",
 ):
-    d_ap = torch.linalg.vector_norm(anchor - positive + eps, ord=p, dim=-1)
-    d_an = torch.linalg.vector_norm(anchor - negative + eps, ord=p, dim=-1)
+    d_ap = torch.linalg.vector_norm(anchor - positive, ord=p, dim=-1).clamp(min=eps)
+    d_an = torch.linalg.vector_norm(anchor - negative, ord=p, dim=-1).clamp(min=eps)
     if swap:
-        d_pn = torch.linalg.vector_norm(positive - negative + eps, ord=p, dim=-1)
+        d_pn = torch.linalg.vector_norm(positive - negative, ord=p, dim=-1).clamp(
+            min=eps
+        )
         out = (d_ap - torch.minimum(d_an, d_pn) + margin).clamp(min=0.0)
     else:
         out = (d_ap - d_an + margin).clamp(min=0.0)
