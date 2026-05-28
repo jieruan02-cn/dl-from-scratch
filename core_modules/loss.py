@@ -679,6 +679,21 @@ class MarginRankingLoss(nn.Module):
         return margin_ranking_loss(input1, input2, target, self.margin, self.reduction)
 
 
+def pairwise_distance(x1, x2, p=2.0, eps=1e-6, keepdim=False):
+    return torch.linalg.vector_norm(x1 - x2 + eps, ord=p, dim=-1, keepdim=keepdim)
+
+
+class PairwiseDistance(nn.Module):
+    def __init__(self, p=2.0, eps=1e-06, keepdim=False):
+        super().__init__()
+        self.p = p
+        self.eps = eps
+        self.keepdim = keepdim
+
+    def forward(self, x1, x2):
+        return pairwise_distance(x1, x2, self.p, self.eps, self.keepdim)
+
+
 def triplet_margin_with_distance_loss(
     anchor,
     positive,
@@ -689,7 +704,7 @@ def triplet_margin_with_distance_loss(
     reduction="mean",
 ):
     if distance_function is None:
-        distance_function = nn.functional.pairwise_distance
+        distance_function = pairwise_distance
     d_ap = distance_function(anchor, positive)
     d_an = distance_function(anchor, negative)
     if swap:
@@ -739,9 +754,7 @@ def triplet_margin_loss(
     swap=False,
     reduction="mean",
 ):
-    def distance_function(x, y):
-        return torch.linalg.vector_norm(x - y, ord=p, dim=-1).clamp(min=eps)
-
+    distance_function = PairwiseDistance(p=p, eps=eps)
     return triplet_margin_with_distance_loss(
         anchor, positive, negative, distance_function, margin, swap, reduction
     )
@@ -778,6 +791,7 @@ def ctc_loss(
     reduction="mean",
     zero_infinity=False,
 ):
+    # dynamic programming.
     pass
 
 
