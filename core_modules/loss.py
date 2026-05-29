@@ -657,6 +657,28 @@ class CosineEmbeddingLoss(nn.Module):
         )
 
 
+def hinge_embedding_loss(input, target, margin=1.0, reduction="mean"):
+    out = torch.where(target == 1, input, (margin - input).clamp(min=0.0))
+    if reduction == "mean":
+        return out.mean()
+    elif reduction == "sum":
+        return out.sum()
+    elif reduction == "none":
+        return out
+    else:
+        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+
+class HingeEmbeddingLoss(nn.Module):
+    def __init__(self, margin=1.0, reduction="mean"):
+        super().__init__()
+        self.margin = margin
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        return hinge_embedding_loss(input, target, self.margin, self.reduction)
+
+
 def margin_ranking_loss(input1, input2, target, margin=0.0, reduction="mean"):
     out = (margin - target * (input1 - input2)).clamp(min=0.0)
     if reduction == "mean":

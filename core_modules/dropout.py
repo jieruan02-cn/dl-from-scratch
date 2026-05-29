@@ -8,6 +8,8 @@ class DropoutFunction(torch.autograd.Function):
         mask = None
         if training:
             out = input if inplace else input.clone()
+            # Use boolean mask to save memory. Using rng state saves more but computing
+            # RN for large tensor is computationally expensive and unclear trade-off.
             mask = torch.rand_like(input) > p
             out.mul_(mask).div_(1 - p)
         else:
