@@ -2,15 +2,28 @@ import torch
 import torch.nn as nn
 
 
+def get_dropout_mask_shape(input, dim):
+    if dim == 0:
+        return input.shape
+
+    assert input.dim() in (dim + 1, dim + 2)
+    return input.shape[:-dim] + (1,) * dim
+
+
 class DropoutFunction(torch.autograd.Function):
     @staticmethod
-    def forward(ctx, input, p, training, inplace):
+    def forward(ctx, input, p, training, inplace, dim):
+        if p < 0.0 or p >= 1.0:
+            raise ValueError(f"dropout probability has to be in [0, 1.0), got {p}")
+
         mask = None
         if training:
             out = input if inplace else input.clone()
             # Use boolean mask to save memory. Using rng state saves more but computing
-            # RN for large tensor is computationally expensive and unclear trade-off.
-            mask = torch.rand_like(input) > p
+            # random number for large tensor is computationally expensive and unclear
+            # trade-off.
+            mask_shape = get_dropout_mask_shape(input, dim)
+            mask = torch.rand(mask_shape, device=input.device) > p
             out.mul_(mask).div_(1 - p)
         else:
             out = input
@@ -32,22 +45,44 @@ class DropoutFunction(torch.autograd.Function):
             grad_input.div_(1 - ctx.p)
         else:
             grad_input = grad_output
-        return grad_input, None, None, None
+        return grad_input, None, None, None, None
 
 
 def dropout(input, p=0.5, training=True, inplace=False):
-    return DropoutFunction.apply(input, p, training, inplace)
+    return DropoutFunction.apply(input, p, training, inplace, 0)
+
+
+def dropout1d(input, p=0.5, training=True, inplace=False):
+    return DropoutFunction.apply(input, p, training, inplace, 1)
+
+
+def dropout2d(input, p=0.5, training=True, inplace=False):
+    return DropoutFunction.apply(input, p, training, inplace, 2)
+
+
+def dropout3d(input, p=0.5, training=True, inplace=False):
+    return DropoutFunction.apply(input, p, training, inplace, 3)
 
 
 class Dropout(nn.Module):
+    _fn = staticmethod(dropout)
+
     def __init__(self, p=0.5, inplace=False):
         super().__init__()
         self.p = p
         self.inplace = inplace
 
     def forward(self, input):
-        return dropout(input, self.p, self.training, self.inplace)
+        return self._fn(input, self.p, self.training, self.inplace)
 
 
-class Dropout1d(nn.Module):
-    pass
+class Dropout1d(Dropout):
+    _fn = staticmethod(dropout1d)
+
+
+class Dropout2d(Dropout):
+    _fn = staticmethod(dropout2d)
+
+
+class Dropout3d(Dropout):
+    _fn = staticmethod(dropout3d)
