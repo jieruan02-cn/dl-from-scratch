@@ -679,6 +679,64 @@ class HingeEmbeddingLoss(nn.Module):
         return hinge_embedding_loss(input, target, self.margin, self.reduction)
 
 
+# class SoftMarginLossFunction(torch.autograd.Function):
+#     @staticmethod
+#     def forward(input, target, reduction="mean"):
+#         prod = input * target
+#         mask = prod > 0.0
+#         out = torch.where(
+#             mask, torch.log1p(torch.exp(-prod)), torch.log1p(torch.exp(prod)) - prod
+#         )
+
+#         if reduction == "mean":
+#             return out.mean()
+#         elif reduction == "sum":
+#             return out.sum()
+#         elif reduction == "none":
+#             return out
+#         else:
+#             raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+#     @staticmethod
+#     def setup_context(ctx, inputs, output):
+#         if ctx.needs_input_grad[0]:
+#             input, target, reduction = inputs
+#             ctx.reduction = reduction
+#             ctx.save_for_backward(input, target)
+
+#     @staticmethod
+#     def backward(ctx, grad_output):
+#         input, target = ctx.saved_tensors
+#         grad_input = grad_output * target * (sigmoid(input * target) - 1)
+#         if ctx.reduction == "mean":
+#             grad_input.div_(input.numel())
+#         return grad_input, None, None
+
+
+def soft_margin_loss(input, target, reduction="mean"):
+    # we don't use SoftMarginLossFunction.apply because there's no memory saved and only
+    # 1-2 kernels saved, the customized version saves input + target, while input *
+    # target saves target and logsigmoid saves input or ouput.
+    out = -logsigmoid(input * target)
+    if reduction == "mean":
+        return out.mean()
+    elif reduction == "sum":
+        return out.sum()
+    elif reduction == "none":
+        return out
+    else:
+        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+
+class SoftMarginLoss(nn.Module):
+    def __init__(self, reduction="mean"):
+        super().__init__()
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        return soft_margin_loss(input, target, self.reduction)
+
+
 def margin_ranking_loss(input1, input2, target, margin=0.0, reduction="mean"):
     out = (margin - target * (input1 - input2)).clamp(min=0.0)
     if reduction == "mean":

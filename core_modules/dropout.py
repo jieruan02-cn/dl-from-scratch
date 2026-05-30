@@ -47,3 +47,7 @@ class Dropout(nn.Module):
 
     def forward(self, input):
         return dropout(input, self.p, self.training, self.inplace)
+
+
+class Dropout1d(nn.Module):
+    pass
