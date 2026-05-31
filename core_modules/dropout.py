@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from activation import SELUFunction
 
 
 def get_dropout_mask_shape(input, dim):
@@ -86,3 +87,54 @@ class Dropout2d(Dropout):
 
 class Dropout3d(Dropout):
     _fn = staticmethod(dropout3d)
+
+
+class AlphaDropoutFunction(torch.autograd.Function):
+    ALPHA = -SELUFunction.ALPHA * SELUFunction.SCALE
+
+    @staticmethod
+    def forward(ctx, input, p, training, inplace):
+        mask, a = None, None
+        if training:
+            out = input if inplace else input.clone()
+            mask = torch.rand_like(input) > p
+            out.sub_(AlphaDropoutFunction.ALPHA).mul_(mask).add_(
+                AlphaDropoutFunction.ALPHA
+            )
+
+            a = (1 - p + AlphaDropoutFunction.ALPHA**2 * p * (1 - p)) ** (-0.5)
+            b = -p * AlphaDropoutFunction.ALPHA * a
+            out.mul_(a).add_(b)
+        else:
+            out = input
+
+        if inplace:
+            ctx.mark_dirty(input)
+        if ctx.needs_input_grad[0]:
+            ctx.a = a
+            ctx.training = training
+            ctx.save_for_backward(mask)
+        return out
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        if ctx.training:
+            (mask,) = ctx.saved_tensors
+            grad_input = grad_output * mask * ctx.a
+        else:
+            grad_input = grad_output
+        return grad_input, None, None, None
+
+
+def alpha_dropout(input, p=0.5, training=False, inplace=False):
+    return AlphaDropoutFunction.apply(input, p, training, inplace)
+
+
+class AlphaDropout(nn.Module):
+    def __init__(self, p=0.5, inplace=False):
+        super().__init__()
+        self.p = p
+        self.inplace = inplace
+
+    def forward(self, input):
+        return alpha_dropout(input, self.p, self.training, self.inplace)

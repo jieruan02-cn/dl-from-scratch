@@ -608,8 +608,8 @@ class Mish(nn.Module):
 
 
 class SELUFunction(torch.autograd.Function):
-    alpha = 1.6732632423543772848170429916717
-    scale = 1.0507009873554804934193349852946
+    ALPHA = 1.6732632423543772848170429916717
+    SCALE = 1.0507009873554804934193349852946
 
     @staticmethod
     def forward(input, inplace):
@@ -617,8 +617,8 @@ class SELUFunction(torch.autograd.Function):
         out = input if inplace else input.clone()
         # use torch.expm1 instead of (torch.exp(out[mask]) - 1) to preserve numerical
         # accuracy for very small negative x ~ -10^-8
-        out[mask] = SELUFunction.alpha * torch.expm1(out[mask])
-        out *= SELUFunction.scale
+        out[mask] = SELUFunction.ALPHA * torch.expm1(out[mask])
+        out *= SELUFunction.SCALE
         return out
 
     @staticmethod
@@ -634,7 +634,7 @@ class SELUFunction(torch.autograd.Function):
         (out,) = ctx.saved_tensors
         mask = out <= 0.0
         grad_input = grad_output * torch.where(
-            mask, out + SELUFunction.alpha * SELUFunction.scale, SELUFunction.scale
+            mask, out + SELUFunction.ALPHA * SELUFunction.SCALE, SELUFunction.SCALE
         )
         return grad_input, None
 
