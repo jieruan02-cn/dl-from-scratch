@@ -93,11 +93,11 @@ class AlphaDropoutFunction(torch.autograd.Function):
     ALPHA = -SELUFunction.ALPHA * SELUFunction.SCALE
 
     @staticmethod
-    def forward(ctx, input, p, training, inplace):
+    def forward(ctx, input, p, training, inplace, mask_shape):
         mask, a = None, None
         if training:
             out = input if inplace else input.clone()
-            mask = torch.rand_like(input) > p
+            mask = torch.rand(mask_shape, device=input.device) > p
             out.sub_(AlphaDropoutFunction.ALPHA).mul_(mask).add_(
                 AlphaDropoutFunction.ALPHA
             )
@@ -127,14 +127,26 @@ class AlphaDropoutFunction(torch.autograd.Function):
 
 
 def alpha_dropout(input, p=0.5, training=False, inplace=False):
-    return AlphaDropoutFunction.apply(input, p, training, inplace)
+    return AlphaDropoutFunction.apply(input, p, training, inplace, input.shape)
+
+
+def feature_alpha_dropout(input, p=0.5, training=False, inplace=False):
+    assert input.dim() in (4, 5)
+    mask_shape = input.shape[:-3] + (1, 1, 1)
+    return AlphaDropoutFunction.apply(input, p, training, inplace, mask_shape)
 
 
 class AlphaDropout(nn.Module):
+    _fn = staticmethod(alpha_dropout)
+
     def __init__(self, p=0.5, inplace=False):
         super().__init__()
         self.p = p
         self.inplace = inplace
 
     def forward(self, input):
-        return alpha_dropout(input, self.p, self.training, self.inplace)
+        return self._fn(input, self.p, self.training, self.inplace)
+
+
+class FeatureAlphaDropout(AlphaDropout):
+    _fn = staticmethod(feature_alpha_dropout)
