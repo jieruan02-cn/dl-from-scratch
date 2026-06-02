@@ -862,6 +862,38 @@ class TripletMarginLoss(nn.Module):
         )
 
 
+class MultiMarginLossFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, target, p, margin, weight, reduction):
+        pass
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_ouput):
+        pass
+
+
+def multi_margin_loss(input, target, p=1.0, margin=1.0, weight=None, reduction="mean"):
+    return MultiMarginLossFunction.apply(input, target, p, margin, weight, reduction)
+
+
+class MultiMarginLoss(nn.Module):
+    def __init__(self, p=1, margin=1.0, weight=None, reduction="mean"):
+        super().__init__()
+        self.p = p
+        self.margin = margin
+        self.weight = weight
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        return multi_margin_loss(
+            input, target, self.p, self.margin, self.weight, self.reduction
+        )
+
+
 def ctc_loss(
     log_probs,
     targets,
