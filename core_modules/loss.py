@@ -864,16 +864,60 @@ class TripletMarginLoss(nn.Module):
 
 class MultiMarginLossFunction(torch.autograd.Function):
     @staticmethod
-    def forward(input, target, p, margin, weight, reduction):
-        pass
+    def forward(ctx, input, target, p, margin, weight, reduction):
+        target_view = target.unsqueeze(-1)
+        error = input - torch.gather(input, dim=-1, index=target_view)
+        compensate_src = torch.full(
+            target_view.shape, -margin, device=input.device, dtype=input.dtype
+        )
+        error.add_(margin).scatter_add_(-1, target_view, compensate_src)
+        out = error.clamp(min=0.0)
+        if ctx.needs_input_grad[0]:
+            ctx.p = p
+            ctx.margin = margin
+            ctx.reduction = reduction
+            ctx.num_classes = input.size(-1)
+            ctx.save_for_backward(
+                out if p == 2 else None, error > 0.0, target_view, weight
+            )
+
+        if p == 2:
+            out = out * out
+        out = torch.sum(out, dim=-1) / input.size(-1)
+
+        if weight is not None:
+            out.mul_(weight[target])
+
+        if reduction == "mean":
+            return out.mean()
+        elif reduction == "sum":
+            return out.sum()
+        elif reduction == "none":
+            return out
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
-        pass
+    def backward(ctx, grad_output):
+        out, mask, target_view, weight = ctx.saved_tensors
+        if ctx.p == 2:
+            out.mul_(2.0)
+            neg_out_sum = -torch.sum(out, dim=-1, keepdim=True)
+            grad_input = torch.scatter_add(out, -1, target_view, neg_out_sum)
+        else:
+            grad_input = mask.to(grad_output.dtype)
+            grad_input.scatter_add_(
+                -1, target_view, -grad_input.sum(dim=-1, keepdim=True)
+            )
+        if weight is not None:
+            grad_input.mul_(weight[target_view])
+        if ctx.reduction == "mean" and mask.dim() > 0:
+            grad_input.div_(mask.size(0))
 
-    @staticmethod
-    def backward(ctx, grad_ouput):
-        pass
+        grad_input.mul_(
+            grad_output.unsqueeze(-1) if ctx.reduction == "none" else grad_output
+        ).div_(ctx.num_classes)
+        return grad_input, None, None, None, None, None
 
 
 def multi_margin_loss(input, target, p=1.0, margin=1.0, weight=None, reduction="mean"):
