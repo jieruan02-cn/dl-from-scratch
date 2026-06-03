@@ -50,18 +50,19 @@ def sgd(
     nesterov,
     maximize,
 ):
-    for i, (p, grad, momentum_buf) in enumerate(
+    for i, (p, d_p, momentum_buf) in enumerate(
         zip(params, d_p_list, momentum_buffer_list)
     ):
-        g = -grad if maximize else grad
+        g = -d_p if maximize else d_p
         if weight_decay != 0.0:
             g = g + weight_decay * p
         if momentum != 0.0:
             if momentum_buf is None:
                 b = g.clone()
+                momentum_buffer_list[i] = b
             else:
-                b = momentum_buf * momentum + g * (1 - dampening)
-            momentum_buffer_list[i] = b
+                momentum_buf.mul_(momentum).add_(g, alpha=1 - dampening)
+                b = momentum_buf
             if nesterov:
                 g = g + momentum * b
             else:
@@ -84,6 +85,9 @@ class SGD(Optimizer):
         differentiable=False,
         fused=None,
     ):
+        if nesterov and (momentum <= 0 or dampening != 0):
+            raise ValueError("Nesterov momentum requires a momentum and zero dampening")
+
         defaults = dict(
             lr=lr,
             momentum=momentum,
@@ -106,13 +110,17 @@ class SGD(Optimizer):
 
         for group in self.param_groups:
             with torch.set_grad_enabled(group["differentiable"]):
-                d_p_list = [p.grad for p in group["params"]]
-                momentum_buffer_list = [
-                    self.state[p]["b"] if "b" in self.state[p] else None
-                    for p in group["params"]
-                ]
+                params_with_grad = []
+                d_p_list = []
+                momentum_buffer_list = []
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    params_with_grad.append(p)
+                    d_p_list.append(p.grad)
+                    momentum_buffer_list.append(self.state[p].get("b", None))
                 sgd(
-                    group["params"],
+                    params_with_grad,
                     d_p_list,
                     momentum_buffer_list,
                     foreach=group["foreach"],
@@ -124,7 +132,9 @@ class SGD(Optimizer):
                     nesterov=group["nesterov"],
                     maximize=group["maximize"],
                 )
+
                 for p, buf in zip(group["params"], momentum_buffer_list):
-                    self.state[p]["b"] = buf
+                    if buf is not None:
+                        self.state[p]["b"] = buf
 
         return loss
