@@ -67,7 +67,7 @@ def sgd(
                 g = g + momentum * b
             else:
                 g = b
-        p.sub_(lr * g)
+        p.add_(g, alpha=-lr)
 
 
 class SGD(Optimizer):
@@ -133,7 +133,7 @@ class SGD(Optimizer):
                     maximize=group["maximize"],
                 )
 
-                for p, buf in zip(group["params"], momentum_buffer_list):
+                for p, buf in zip(params_with_grad, momentum_buffer_list):
                     if buf is not None:
                         self.state[p]["b"] = buf
 
