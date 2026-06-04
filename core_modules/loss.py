@@ -938,6 +938,23 @@ class MultiMarginLoss(nn.Module):
         )
 
 
+class MultiLabelMarginLossFunction(torch.autograd.Function):
+    pass
+
+
+def multilabel_margin_loss(input, target, reduction="mean"):
+    return MultiLabelMarginLossFunction.apply(input, target, reduction)
+
+
+class MultiLabelMarginLoss(nn.Module):
+    def __init__(self, reduction="mean"):
+        super().__init__()
+        self.reduction = reduction
+
+    def forward(self, input, target):
+        return multilabel_margin_loss(input, target, self.reduction)
+
+
 def ctc_loss(
     log_probs,
     targets,
