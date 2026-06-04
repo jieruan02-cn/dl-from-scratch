@@ -33,16 +33,10 @@ class Optimizer:
         return self.state
 
 
-def sgd(
+def _single_tensor_sgd(
     params,
     d_p_list,
     momentum_buffer_list,
-    has_sparse_grad=False,
-    foreach=None,
-    fused=None,
-    grad_scale=None,
-    found_inf=None,
-    *,
     weight_decay,
     momentum,
     lr,
@@ -68,6 +62,65 @@ def sgd(
             else:
                 g = b
         p.add_(g, alpha=-lr)
+
+
+def _multi_tensor_sgd(
+    params,
+    d_p_list,
+    momentum_buffer_list,
+    weight_decay,
+    momentum,
+    lr,
+    dampening,
+    nesterov,
+    maximize,
+):
+    pass
+
+
+def sgd(
+    params,
+    d_p_list,
+    momentum_buffer_list,
+    has_sparse_grad=False,
+    foreach=None,
+    fused=None,
+    grad_scale=None,
+    found_inf=None,
+    *,
+    weight_decay,
+    momentum,
+    lr,
+    dampening,
+    nesterov,
+    maximize,
+):
+    if fused:
+        raise ValueError("fused SGD not supported yet.")
+    if foreach:
+        _multi_tensor_sgd(
+            params,
+            d_p_list,
+            momentum_buffer_list,
+            weight_decay,
+            momentum,
+            lr,
+            dampening,
+            nesterov,
+            maximize,
+        )
+    else:
+        _single_tensor_sgd(
+            params,
+            d_p_list,
+            momentum_buffer_list,
+            weight_decay,
+            momentum,
+            lr,
+            dampening,
+            nesterov,
+            maximize,
+        )
 
 
 class SGD(Optimizer):
@@ -108,6 +161,7 @@ class SGD(Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
+        has_sparse_grad = False
         for group in self.param_groups:
             with torch.set_grad_enabled(group["differentiable"]):
                 params_with_grad = []
@@ -116,6 +170,8 @@ class SGD(Optimizer):
                 for p in group["params"]:
                     if p.grad is None:
                         continue
+                    if p.grad.is_sparse:
+                        has_sparse_grad = True
                     params_with_grad.append(p)
                     d_p_list.append(p.grad)
                     momentum_buffer_list.append(self.state[p].get("b", None))
@@ -123,6 +179,7 @@ class SGD(Optimizer):
                     params_with_grad,
                     d_p_list,
                     momentum_buffer_list,
+                    has_sparse_grad,
                     foreach=group["foreach"],
                     fused=group["fused"],
                     weight_decay=group["weight_decay"],
