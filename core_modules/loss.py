@@ -939,7 +939,79 @@ class MultiMarginLoss(nn.Module):
 
 
 class MultiLabelMarginLossFunction(torch.autograd.Function):
-    pass
+    @staticmethod
+    def forward(input, target, reduction="mean"):
+        C = input.size(-1)
+        repeat_shape = (1,) * (input.dim() - 1) + (C,)
+        mask_src = torch.arange(0, C, device=input.device).repeat_interleave(
+            C, -1
+        ) != target.repeat(repeat_shape)
+        mask = torch.segment_reduce(
+            mask_src,
+            reduce="prod",
+            lengths=torch.full((C,), C, device=input.device),
+            axis=-1,
+        ).repeat_interleave(C, -1)
+        out = torch.sum(
+            (
+                1
+                + input.repeat_interleave(C, -1)
+                - torch.gather(input, -1, target).repeat(repeat_shape)
+            ).clamp(min=0.0)
+            * mask,
+            dim=-1,
+        )
+        out.div_(C)
+
+        if reduction == "mean":
+            return out.mean()
+        elif reduction == "sum":
+            return out.sum()
+        elif reduction == "none":
+            return out
+        else:
+            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, target, reduction = inputs
+        if ctx.needs_input_grad[0]:
+            ctx.reduction = reduction
+            ctx.save_for_backward(input, target)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, target = ctx.saved_tensors
+        C = input.size(-1)
+        repeat_shape = (1,) * (input.dim() - 1) + (C,)
+        expanded_mask = (
+            1
+            + input.repeat_interleave(C, -1)
+            - torch.gather(input, -1, target).repeat(repeat_shape)
+        ) > 0
+        grad_input = torch.segment_reduce(
+            expanded_mask,
+            reduce="sum",
+            lengths=torch.full((C,), C, device=input.device),
+            axis=-1,
+        ).scatter_reduce_(
+            dim=-1,
+            index=target,
+            src=torch.zeros_like(input).index_reduce_(
+                dim=-1,
+                index=torch.arange(0, C).repeat((C,)),
+                source=expanded_mask * -C,
+                reduce="mean",
+            ),
+        )
+
+        if ctx.reduction == "none":
+            grad_input.mul_(grad_output.unsqueeze(-1))
+        else:
+            grad_input.mul_(grad_output)
+        if ctx.reduction == "mean":
+            grad_output.div_(C)
+        return grad_input, None, None
 
 
 def multilabel_margin_loss(input, target, reduction="mean"):
