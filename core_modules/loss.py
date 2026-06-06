@@ -942,23 +942,29 @@ class MultiLabelMarginLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(input, target, reduction="mean"):
         C = input.size(-1)
+        expand_index = (
+            torch.arange(C, device=input.device)
+            .repeat_interleave(C, -1)
+            .reshape((1,) * (input.dim() - 1) + (C * C,))
+        )
         repeat_shape = (1,) * (input.dim() - 1) + (C,)
-        mask_src = torch.arange(0, C, device=input.device).repeat_interleave(
-            C, -1
-        ) != target.repeat(repeat_shape)
-        mask = torch.segment_reduce(
-            mask_src,
-            reduce="prod",
-            lengths=torch.full((C,), C, device=input.device),
-            axis=-1,
-        ).repeat_interleave(C, -1)
+        target_mask = (target == -1).cumsum(-1) == 0
+        input_mask = expand_index != torch.where(target_mask, target, -1).repeat(
+            repeat_shape
+        )
+        input_mask = (
+            input_mask.reshape(*input_mask.shape[:-1], C, C)
+            .prod(-1)
+            .repeat_interleave(C, -1)
+        )
         out = torch.sum(
             (
                 1
                 + input.repeat_interleave(C, -1)
-                - torch.gather(input, -1, target).repeat(repeat_shape)
+                - torch.gather(input, -1, target.clamp(min=0)).repeat(repeat_shape)
             ).clamp(min=0.0)
-            * mask,
+            * input_mask
+            * target_mask.repeat(repeat_shape),
             dim=-1,
         )
         out.div_(C)
