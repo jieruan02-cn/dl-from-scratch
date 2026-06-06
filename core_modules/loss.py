@@ -959,7 +959,7 @@ class MultiLabelMarginLossFunction(torch.autograd.Function):
             .prod(-1)
             .repeat_interleave(C, -1)
         )
-        out = (full_prod.clamp(min=0.0) * input_mask * target_mask).sum(dim=-1).div_(C)
+        out = (full_prod.clamp(min=0.0) * target_mask * input_mask).sum(dim=-1).div_(C)
 
         if reduction == "mean":
             return out.mean()
@@ -982,33 +982,47 @@ class MultiLabelMarginLossFunction(torch.autograd.Function):
         input, target = ctx.saved_tensors
         C = input.size(-1)
         repeat_shape = (1,) * (input.dim() - 1) + (C,)
-        expanded_mask = (
-            1
-            + input.repeat_interleave(C, -1)
-            - torch.gather(input, -1, target).repeat(repeat_shape)
-        ) > 0
-        grad_input = torch.segment_reduce(
-            expanded_mask,
-            reduce="sum",
-            lengths=torch.full((C,), C, device=input.device),
-            axis=-1,
-        ).scatter_reduce_(
-            dim=-1,
-            index=target,
-            src=torch.zeros_like(input).index_reduce_(
+        repeated_target = input.gather(-1, target.clamp(min=0)).repeat(repeat_shape)
+        full_prod_mask = (1 + input.repeat_interleave(C, -1) - repeated_target) > 0
+
+        padding_mask = (target == -1).cumsum(-1) == 0
+        target_mask = padding_mask.repeat(repeat_shape)
+
+        pairwise_mask = torch.where(padding_mask, target, -1).repeat(
+            repeat_shape
+        ) != torch.arange(C, device=input.device).repeat_interleave(C, -1).reshape(
+            (1,) * (input.dim() - 1) + (C * C,)
+        )
+        input_mask = (
+            pairwise_mask.reshape(*pairwise_mask.shape[:-1], C, C)
+            .prod(-1)
+            .repeat_interleave(C, -1)
+        )
+
+        final_mask = (full_prod_mask * target_mask * input_mask).to(input.dtype)
+        grad_input = (
+            final_mask.reshape(*full_prod_mask.shape[:-1], C, C)
+            .sum(-1)
+            .scatter_reduce_(
                 dim=-1,
-                index=torch.arange(0, C).repeat((C,)),
-                source=expanded_mask * -C,
-                reduce="mean",
-            ),
+                index=target.clamp(min=0),
+                src=torch.zeros_like(input).index_reduce_(
+                    dim=-1,
+                    index=torch.arange(0, C).repeat((C,)),
+                    source=-final_mask * C,
+                    reduce="mean",
+                    include_self=False,
+                ),
+                reduce="sum",
+            )
         )
 
         if ctx.reduction == "none":
-            grad_input.mul_(grad_output.unsqueeze(-1))
+            grad_input.mul_(grad_output.unsqueeze(-1)).div_(C)
         else:
-            grad_input.mul_(grad_output)
-        if ctx.reduction == "mean":
-            grad_output.div_(C)
+            grad_input.mul_(grad_output).div_(C)
+        if ctx.reduction == "mean" and input.dim() > 1:
+            grad_input.div_(input.size(0))
         return grad_input, None, None
 
 
