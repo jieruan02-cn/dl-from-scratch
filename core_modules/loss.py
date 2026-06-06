@@ -942,32 +942,24 @@ class MultiLabelMarginLossFunction(torch.autograd.Function):
     @staticmethod
     def forward(input, target, reduction="mean"):
         C = input.size(-1)
-        expand_index = (
-            torch.arange(C, device=input.device)
-            .repeat_interleave(C, -1)
-            .reshape((1,) * (input.dim() - 1) + (C * C,))
-        )
         repeat_shape = (1,) * (input.dim() - 1) + (C,)
-        target_mask = (target == -1).cumsum(-1) == 0
-        input_mask = expand_index != torch.where(target_mask, target, -1).repeat(
+        repeated_target = input.gather(-1, target.clamp(min=0)).repeat(repeat_shape)
+        full_prod = 1 + input.repeat_interleave(C, -1) - repeated_target
+
+        padding_mask = (target == -1).cumsum(-1) == 0
+        target_mask = padding_mask.repeat(repeat_shape)
+
+        pairwise_mask = torch.where(padding_mask, target, -1).repeat(
             repeat_shape
+        ) != torch.arange(C, device=input.device).repeat_interleave(C, -1).reshape(
+            (1,) * (input.dim() - 1) + (C * C,)
         )
         input_mask = (
-            input_mask.reshape(*input_mask.shape[:-1], C, C)
+            pairwise_mask.reshape(*pairwise_mask.shape[:-1], C, C)
             .prod(-1)
             .repeat_interleave(C, -1)
         )
-        out = torch.sum(
-            (
-                1
-                + input.repeat_interleave(C, -1)
-                - torch.gather(input, -1, target.clamp(min=0)).repeat(repeat_shape)
-            ).clamp(min=0.0)
-            * input_mask
-            * target_mask.repeat(repeat_shape),
-            dim=-1,
-        )
-        out.div_(C)
+        out = (full_prod.clamp(min=0.0) * input_mask * target_mask).sum(dim=-1).div_(C)
 
         if reduction == "mean":
             return out.mean()
