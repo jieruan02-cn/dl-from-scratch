@@ -1,3 +1,5 @@
+from typing import cast
+
 import torch
 from collections import defaultdict
 
@@ -33,9 +35,16 @@ class Optimizer:
         return self.state
 
 
+def _to_scalar(x: float | torch.Tensor):
+    if isinstance(x, torch.Tensor) and x.dim() != 0:
+        return x.squeeze()
+    else:
+        return x
+
+
 def _single_tensor_sgd(
     params,
-    d_p_list,
+    grads,
     momentum_buffer_list,
     weight_decay,
     momentum,
@@ -44,29 +53,32 @@ def _single_tensor_sgd(
     nesterov,
     maximize,
 ):
-    for i, (p, d_p, momentum_buf) in enumerate(
-        zip(params, d_p_list, momentum_buffer_list)
-    ):
-        g = -d_p if maximize else d_p
+    lr = _to_scalar(lr)
+    for i, param in enumerate(params):
+        grad = -grads[i] if maximize else grads[i]
+
         if weight_decay != 0.0:
-            g = g + weight_decay * p
+            grad = grad.add(param, alpha=weight_decay)
+
         if momentum != 0.0:
-            if momentum_buf is None:
-                b = g.clone()
-                momentum_buffer_list[i] = b
+            buf = momentum_buffer_list[i]
+
+            if buf is None:
+                buf = grad.detach().clone()
+                momentum_buffer_list[i] = buf
             else:
-                momentum_buf.mul_(momentum).add_(g, alpha=1 - dampening)
-                b = momentum_buf
+                buf.mul_(momentum).add_(grad, alpha=1 - dampening)
+
             if nesterov:
-                g = g + momentum * b
+                grad = grad.add(buf, alpha=momentum)
             else:
-                g = b
-        p.add_(g, alpha=-lr)
+                grad = buf
+        param.add_(grad, alpha=-lr)
 
 
 def _multi_tensor_sgd(
     params,
-    d_p_list,
+    grads,
     momentum_buffer_list,
     weight_decay,
     momentum,
@@ -75,7 +87,66 @@ def _multi_tensor_sgd(
     nesterov,
     maximize,
 ):
-    pass
+    if len(params) == 0:
+        return
+    lr = _to_scalar(lr)
+
+    grouped_tensors = torch.optim.Optimizer._group_tensors_by_device_and_dtype(
+        [params, grads, momentum_buffer_list], with_indices=True
+    )
+    for (
+        device_params,
+        device_grads,
+        device_momentum_buffer_list,
+    ), indices in grouped_tensors.values():
+        if maximize:
+            device_grads = torch._foreach_neg(device_grads)
+
+        if weight_decay != 0.0:
+            # Reuse the intermediate memory (device_grads) already allocated for maximize
+            if maximize:
+                torch._foreach_add_(device_grads, device_params, alpha=weight_decay)
+            else:
+                device_grads = torch._foreach_add(
+                    device_grads, device_params, alpha=weight_decay
+                )
+
+        if momentum != 0:
+            bufs: list[torch.Tensor] = []
+
+            all_states_with_buffer = True
+            for i in range(len(device_momentum_buffer_list)):
+                if device_momentum_buffer_list[i] is None:
+                    all_states_with_buffer = False
+                    break
+                else:
+                    bufs.append(device_momentum_buffer_list[i])
+
+            if all_states_with_buffer:
+                torch._foreach_mul_(bufs, momentum)
+                torch._foreach_add_(bufs, device_grads, alpha=1 - dampening)
+            else:
+                bufs = []
+                for i in range(len(device_momentum_buffer_list)):
+                    if device_momentum_buffer_list[i] is None:
+                        buf = device_momentum_buffer_list[i] = momentum_buffer_list[
+                            indices[i]
+                        ] = device_grads[i].detach().clone()
+                    else:
+                        buf = device_momentum_buffer_list[i]
+                        buf.mul_(momentum).add_(device_grads[i], alpha=1 - dampening)
+                    bufs.append(buf)
+
+            if nesterov:
+                torch._foreach_add_(device_grads, bufs, alpha=momentum)
+            else:
+                device_grads = bufs
+
+        if isinstance(lr, torch.Tensor):
+            grads_x_lr = torch._foreach_mul(device_grads, -lr)
+            torch._foreach_add_(device_params, grads_x_lr)
+        else:
+            torch._foreach_add_(device_params, device_grads, alpha=-lr)
 
 
 def sgd(
@@ -95,32 +166,25 @@ def sgd(
     nesterov,
     maximize,
 ):
-    if fused:
+    if fused is not None:
         raise ValueError("fused SGD not supported yet.")
-    if foreach:
-        _multi_tensor_sgd(
-            params,
-            d_p_list,
-            momentum_buffer_list,
-            weight_decay,
-            momentum,
-            lr,
-            dampening,
-            nesterov,
-            maximize,
-        )
+    if foreach is None:
+        func = _single_tensor_sgd
     else:
-        _single_tensor_sgd(
-            params,
-            d_p_list,
-            momentum_buffer_list,
-            weight_decay,
-            momentum,
-            lr,
-            dampening,
-            nesterov,
-            maximize,
-        )
+        func = _multi_tensor_sgd
+
+    # grad_scale and found_inf is only for fused implementation.
+    func(
+        params,
+        d_p_list,
+        momentum_buffer_list,
+        weight_decay,
+        momentum,
+        lr,
+        dampening,
+        nesterov,
+        maximize,
+    )
 
 
 class SGD(Optimizer):
