@@ -259,3 +259,134 @@ class SGD(Optimizer):
                         self.state[p]["b"] = buf
 
         return loss
+
+
+def _single_tensor_rmsprop(
+    params,
+    grads,
+    square_avgs,
+    grad_avgs,
+    momentum_buffer_list,
+    state_steps,
+    maximize,
+    capturable,
+    has_complex,
+    lr,
+    alpha,
+    eps,
+    weight_decay,
+    momentum,
+    centered,
+):
+    pass
+
+
+def _multi_tensor_rmsprop(
+    params,
+    grads,
+    square_avgs,
+    grad_avgs,
+    momentum_buffer_list,
+    state_steps,
+    maximize,
+    capturable,
+    has_complex,
+    lr,
+    alpha,
+    eps,
+    weight_decay,
+    momentum,
+    centered,
+):
+    pass
+
+
+def rmsprop(
+    params,
+    grads,
+    square_avgs,
+    grad_avgs,
+    momentum_buffer_list,
+    state_steps,
+    foreach=None,
+    maximize=False,
+    differentiable=False,
+    capturable=False,
+    has_complex=False,
+    *,
+    lr,
+    alpha,
+    eps,
+    weight_decay,
+    momentum,
+    centered,
+):
+    pass
+
+    if foreach is None:
+        func = _single_tensor_rmsprop
+    else:
+        func = _multi_tensor_rmsprop
+
+    with torch.set_grad_enabled(differentiable):
+        func(
+            params,
+            grads,
+            square_avgs,
+            grad_avgs,
+            momentum_buffer_list,
+            state_steps,
+            maximize,
+            capturable,
+            has_complex,
+            lr,
+            alpha,
+            eps,
+            weight_decay,
+            momentum,
+            centered,
+        )
+
+
+class RMSprop(Optimizer):
+    def __init__(
+        self,
+        params,
+        lr=0.01,
+        alpha=0.99,
+        eps=1e-08,
+        weight_decay=0,
+        momentum=0,
+        centered=False,
+        capturable=False,
+        foreach=None,
+        maximize=False,
+        differentiable=False,
+    ):
+        defaults = {"lr": lr, "alpha": alpha}
+        super().__init__(params, defaults)
+
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.no_grad():
+                loss = closure()
+
+        for group in self.param_groups:
+            params_with_grad = []
+            grads = []
+            square_avgs = []
+            grad_avgs = []
+            momentum_buffer_list = []
+            state_steps = []
+
+            rmsprop(
+                params_with_grad,
+                grads,
+                square_avgs,
+                grad_avgs,
+                momentum_buffer_list,
+                state_steps,
+            )
+
+        return loss
