@@ -269,6 +269,7 @@ def _single_tensor_rmsprop(
     momentum_buffer_list,
     state_steps,
     maximize,
+    differentiable,
     capturable,
     has_complex,
     lr,
@@ -289,6 +290,7 @@ def _multi_tensor_rmsprop(
     momentum_buffer_list,
     state_steps,
     maximize,
+    differentiable,
     capturable,
     has_complex,
     lr,
@@ -321,31 +323,29 @@ def rmsprop(
     momentum,
     centered,
 ):
-    pass
-
     if foreach is None:
         func = _single_tensor_rmsprop
     else:
         func = _multi_tensor_rmsprop
 
-    with torch.set_grad_enabled(differentiable):
-        func(
-            params,
-            grads,
-            square_avgs,
-            grad_avgs,
-            momentum_buffer_list,
-            state_steps,
-            maximize,
-            capturable,
-            has_complex,
-            lr,
-            alpha,
-            eps,
-            weight_decay,
-            momentum,
-            centered,
-        )
+    func(
+        params,
+        grads,
+        square_avgs,
+        grad_avgs,
+        momentum_buffer_list,
+        state_steps,
+        maximize,
+        differentiable,
+        capturable,
+        has_complex,
+        lr,
+        alpha,
+        eps,
+        weight_decay,
+        momentum,
+        centered,
+    )
 
 
 class RMSprop(Optimizer):
@@ -363,30 +363,63 @@ class RMSprop(Optimizer):
         maximize=False,
         differentiable=False,
     ):
-        defaults = {"lr": lr, "alpha": alpha}
+        defaults = {
+            "lr": lr,
+            "alpha": alpha,
+            "eps": eps,
+            "weight_decay": weight_decay,
+            "momentum": momentum,
+            "centered": centered,
+            "capturable": capturable,
+            "foreach": foreach,
+            "maximize": maximize,
+            "differentiable": differentiable,
+        }
         super().__init__(params, defaults)
 
+    @torch.no_grad()
     def step(self, closure=None):
         loss = None
         if closure is not None:
-            with torch.no_grad():
+            with torch.enable_grad():
                 loss = closure()
 
         for group in self.param_groups:
-            params_with_grad = []
-            grads = []
-            square_avgs = []
-            grad_avgs = []
-            momentum_buffer_list = []
-            state_steps = []
+            with torch.set_grad_enabled(group["differentiable"]):
+                params_with_grad = []
+                grads = []
+                square_avgs = []
+                grad_avgs = []
+                momentum_buffer_list = []
+                state_steps = []
+                has_complex = False
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    if not has_complex and torch.is_complex(p):
+                        has_complex = True
+                    params_with_grad.append(p)
+                    grads.append(p.grad)
+                    state = self.state[p]
 
-            rmsprop(
-                params_with_grad,
-                grads,
-                square_avgs,
-                grad_avgs,
-                momentum_buffer_list,
-                state_steps,
-            )
+                rmsprop(
+                    params_with_grad,
+                    grads,
+                    square_avgs,
+                    grad_avgs,
+                    momentum_buffer_list,
+                    state_steps,
+                    foreach=group["foreach"],
+                    maximize=group["maximize"],
+                    differentiable=group["differentiable"],
+                    capturable=group["capturable"],
+                    has_complex=has_complex,
+                    lr=group["lr"],
+                    alpha=group["alpha"],
+                    eps=group["eps"],
+                    weight_decay=group["weight_decay"],
+                    momentum=group["momentum"],
+                    centered=group["centered"],
+                )
 
         return loss
