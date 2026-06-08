@@ -99,6 +99,7 @@ def _multi_tensor_sgd(
         device_grads,
         device_momentum_buffer_list,
     ), indices in grouped_tensors.values():
+        # First call is non-inplace to avoid corrupt p.grad, the autograd-owned memory.
         if maximize:
             device_grads = torch._foreach_neg(device_grads)
 
@@ -267,7 +268,6 @@ def _single_tensor_rmsprop(
     square_avgs,
     grad_avgs,
     momentum_buffer_list,
-    state_steps,
     maximize,
     differentiable,
     capturable,
@@ -279,7 +279,33 @@ def _single_tensor_rmsprop(
     momentum,
     centered,
 ):
-    pass
+    lr = _to_scalar(lr)
+
+    for i, param in enumerate(params):
+        # detach() is wrong here because if differentiable is False, then no need for it,
+        # if differentiable is True, it violates user intent; clone() is not needed as no
+        # inplace modification of grad.
+        grad = -grads[i] if maximize else grads[i]
+
+        if weight_decay != 0.0:
+            grad = grad.add(param, alpha=weight_decay)
+
+        square_avg = square_avgs[i]
+        square_avg.mul_(alpha).add_(grad * grad, alpha=1 - alpha)
+
+        local_square_avg = square_avg
+        if centered:
+            grad_avg = grad_avgs[i]
+            grad_avg.mul_(alpha).add_(grad, alpha=1 - alpha)
+            local_square_avg = square_avg - grad_avg * grad_avg
+
+        normed_grad = grad.div(torch.sqrt(local_square_avg) + eps)
+        if momentum > 0.0:
+            buf = momentum_buffer_list[i]
+            buf.mul_(momentum).add_(normed_grad)
+            param.add_(buf, alpha=-lr)
+        else:
+            param.add_(normed_grad, alpha=-lr)
 
 
 def _multi_tensor_rmsprop(
@@ -391,7 +417,6 @@ class RMSprop(Optimizer):
                 square_avgs = []
                 grad_avgs = []
                 momentum_buffer_list = []
-                state_steps = []
                 has_complex = False
                 for p in group["params"]:
                     if p.grad is None:
@@ -400,7 +425,14 @@ class RMSprop(Optimizer):
                         has_complex = True
                     params_with_grad.append(p)
                     grads.append(p.grad)
+
                     state = self.state[p]
+                    if len(state) == 0:
+                        square_avgs.append(torch.zeros_like(p))
+                        if group["centered"]:
+                            grad_avgs.append(torch.zeros_like(p))
+                        if group["momentum"]:
+                            momentum_buffer_list.append(torch.zeros_like(p))
 
                 rmsprop(
                     params_with_grad,
@@ -408,7 +440,6 @@ class RMSprop(Optimizer):
                     square_avgs,
                     grad_avgs,
                     momentum_buffer_list,
-                    state_steps,
                     foreach=group["foreach"],
                     maximize=group["maximize"],
                     differentiable=group["differentiable"],
@@ -421,5 +452,19 @@ class RMSprop(Optimizer):
                     momentum=group["momentum"],
                     centered=group["centered"],
                 )
+
+                for p, square_avg, grad_avg, momentum_buf in zip(
+                    params_with_grad,
+                    square_avgs,
+                    grad_avgs,
+                    momentum_buffer_list,
+                ):
+                    state = self.state[p]
+                    if square_avg is not None:
+                        state["square_avg"] = square_avg
+                    if grad_avg is not None:
+                        state["grad_avg"] = grad_avg
+                    if momentum_buf is not None:
+                        state["momentum_buffer"] = momentum_buf
 
         return loss
