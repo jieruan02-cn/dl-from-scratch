@@ -296,13 +296,13 @@ def _single_tensor_rmsprop(
             grad_avg.mul_(alpha).add_(grad, alpha=1 - alpha)
             local_square_avg = square_avg - grad_avg * grad_avg
 
-        normed_grad = grad.div(torch.sqrt(local_square_avg) + eps)
+        avg = torch.sqrt(local_square_avg).add_(eps)
         if momentum > 0.0:
             buf = momentum_buffer_list[i]
-            buf.mul_(momentum).add_(normed_grad)
+            buf.mul_(momentum).addcdiv_(grad, avg)
             param.add_(buf, alpha=-lr)
         else:
-            param.add_(normed_grad, alpha=-lr)
+            param.addcdiv_(grad, avg, value=-lr)
 
 
 def _multi_tensor_rmsprop(
@@ -321,16 +321,28 @@ def _multi_tensor_rmsprop(
 ):
     lr = _to_scalar(lr)
 
+    tensor_lists = [params, grads, square_avgs]
+    if centered:
+        tensor_lists.append(grad_avgs)
+    if momentum > 0.0:
+        tensor_lists.append(momentum_buffer_list)
     grouped_tensors = torch.optim.Optimizer._group_tensors_by_device_and_dtype(
-        [params, grads, square_avgs, grad_avgs, momentum_buffer_list], with_indices=True
+        tensor_lists
     )
+
     for (
         device_params,
         device_grads,
         device_square_avgs,
-        device_grad_avgs,
-        device_momentum_buffer_list,
-    ), indices in grouped_tensors.values():
+        *rest,
+    ), _ in grouped_tensors.values():
+        index = 0
+        if centered:
+            device_grad_avgs = rest[index]
+            index += 1
+        if momentum > 0.0:
+            device_momentum_buffer_list = rest[index]
+
         if maximize:
             device_grads = torch._foreach_neg(device_grads)
 
