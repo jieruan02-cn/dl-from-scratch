@@ -517,3 +517,186 @@ class RMSprop(Optimizer):
                         state["momentum_buffer"] = momentum_buf
 
         return loss
+
+
+def _single_tensor_adam(
+    params,
+    grads,
+    exp_avgs,
+    exp_avg_sqs,
+    max_exp_avg_sqs,
+    state_steps,
+    decoupled_weight_decay,
+    amsgrad,
+    beta1,
+    beta2,
+    lr,
+    weight_decay,
+    eps,
+    maximize,
+):
+    pass
+
+
+def _multi_tensor_adam(
+    params,
+    grads,
+    exp_avgs,
+    exp_avg_sqs,
+    max_exp_avg_sqs,
+    state_steps,
+    decoupled_weight_decay,
+    amsgrad,
+    beta1,
+    beta2,
+    lr,
+    weight_decay,
+    eps,
+    maximize,
+):
+    pass
+
+
+def adam(
+    params,
+    grads,
+    exp_avgs,
+    exp_avg_sqs,
+    max_exp_avg_sqs,
+    state_steps,
+    foreach=None,
+    capturable=False,
+    differentiable=False,
+    fused=None,
+    grad_scale=None,
+    found_inf=None,
+    has_complex=False,
+    decoupled_weight_decay=False,
+    *,
+    amsgrad,
+    beta1,
+    beta2,
+    lr,
+    weight_decay,
+    eps,
+    maximize,
+):
+    if fused is not None:
+        raise ValueError("fused adam not supported yet.")
+    if foreach is None:
+        func = _single_tensor_adam
+    else:
+        func = _multi_tensor_adam
+
+    return func(
+        params,
+        grads,
+        exp_avgs,
+        exp_avg_sqs,
+        max_exp_avg_sqs,
+        state_steps,
+        decoupled_weight_decay,
+        amsgrad,
+        beta1,
+        beta2,
+        lr,
+        weight_decay,
+        eps,
+        maximize,
+    )
+
+
+class Adam(Optimizer):
+    def __init__(
+        self,
+        params,
+        lr=0.001,
+        betas=(0.9, 0.999),
+        eps=1e-08,
+        weight_decay=0,
+        amsgrad=False,
+        *,
+        foreach=None,
+        maximize=False,
+        capturable=False,
+        differentiable=False,
+        fused=None,
+        decoupled_weight_decay=False,
+    ):
+        defaults = {
+            "lr": lr,
+            "betas": betas,
+            "eps": eps,
+            "weight_decay": weight_decay,
+            "amsgrad": amsgrad,
+            "foreach": foreach,
+            "maximize": maximize,
+            "capturable": capturable,
+            "differentiable": differentiable,
+            "fused": fused,
+            "decoupled_weight_decay": decoupled_weight_decay,
+        }
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            with torch.set_grad_enabled(group["differentiable"]):
+                params_with_grad = []
+                grads = []
+                exp_avgs = []
+                exp_avg_sqs = []
+                max_exp_avg_sqs = []
+                state_steps = []
+                grad_scale, has_complex, found_inf = None, False, False
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    if not has_complex and torch.is_complex(p):
+                        has_complex = True
+                    if not found_inf and torch.isinf(p.grad).any():
+                        found_inf = True
+                    params_with_grad.append(p)
+                    grads.append(p.grad)
+                    state = self.state[p]
+                    if len(state) == 0:
+                        state["exp_avgs"] = torch.zeros_like(p)
+                        state["exp_avg_sqs"] = torch.zeros_like(p)
+                        state["max_exp_avg_sqs"] = (
+                            torch.zeros_like(p) if group["amsgrad"] else None
+                        )
+                        state["state_steps"] = torch.zeros((), device=p.device)
+
+                    exp_avgs.append(state["exp_avgs"])
+                    exp_avg_sqs.append(state["exp_avg_sqs"])
+                    max_exp_avg_sqs.append(state["max_exp_avg_sqs"])
+                    state_steps.append(state["state_steps"])
+
+                adam(
+                    params_with_grad,
+                    grads,
+                    exp_avgs,
+                    exp_avg_sqs,
+                    max_exp_avg_sqs,
+                    state_steps,
+                    foreach=group["foreach"],
+                    capturable=group["capturable"],
+                    differentiable=group["differentiable"],
+                    fused=group["fused"],
+                    grad_scale=grad_scale,
+                    has_complex=has_complex,
+                    decoupled_weight_decay=group["decoupled_weight_decay"],
+                    amsgrad=group["amsgrad"],
+                    beta1=group["betas"][0],
+                    beta2=group["betas"][1],
+                    lr=group["lr"],
+                    weight_decay=group["weight_decay"],
+                    eps=group["eps"],
+                    maximize=group["maximize"],
+                )
+
+        return loss
