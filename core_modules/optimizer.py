@@ -288,7 +288,7 @@ def _single_tensor_rmsprop(
             grad = grad.add(param, alpha=weight_decay)
 
         square_avg = square_avgs[i]
-        square_avg.mul_(alpha).addcmul_(grad, grad, alpha=1 - alpha)
+        square_avg.mul_(alpha).addcmul_(grad, grad, value=1 - alpha)
 
         local_square_avg = square_avg
         if centered:
@@ -319,7 +319,50 @@ def _multi_tensor_rmsprop(
     momentum,
     centered,
 ):
-    pass
+    lr = _to_scalar(lr)
+
+    grouped_tensors = torch.optim.Optimizer._group_tensors_by_device_and_dtype(
+        [params, grads, square_avgs, grad_avgs, momentum_buffer_list], with_indices=True
+    )
+    for (
+        device_params,
+        device_grads,
+        device_square_avgs,
+        device_grad_avgs,
+        device_momentum_buffer_list,
+    ), indices in grouped_tensors.values():
+        if maximize:
+            device_grads = torch._foreach_neg(device_grads)
+
+        if weight_decay != 0.0:
+            if maximize:
+                torch._foreach_add_(device_grads, device_params, alpha=weight_decay)
+            else:
+                device_grads = torch._foreach_add(
+                    device_grads, device_params, alpha=weight_decay
+                )
+
+        torch._foreach_mul_(device_square_avgs, alpha)
+        torch._foreach_addcmul_(
+            device_square_avgs, device_grads, device_grads, 1 - alpha
+        )
+
+        local_square_avgs = device_square_avgs
+        if centered:
+            torch._foreach_mul_(device_grad_avgs, alpha)
+            torch._foreach_add_(device_grad_avgs, device_grads, alpha=1 - alpha)
+            local_square_avgs = torch._foreach_sub(
+                device_square_avgs,
+                torch._foreach_mul(device_grad_avgs, device_grad_avgs),
+            )
+
+        avg = torch._foreach_add_(torch._foreach_sqrt(local_square_avgs), eps)
+        if momentum > 0.0:
+            torch._foreach_mul_(device_momentum_buffer_list, momentum)
+            torch._foreach_addcdiv_(device_momentum_buffer_list, device_grads, avg)
+            torch._foreach_add_(device_params, device_momentum_buffer_list, alpha=-lr)
+        else:
+            torch._foreach_addcdiv_(device_params, device_grads, avg, -lr)
 
 
 def rmsprop(
