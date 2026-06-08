@@ -269,9 +269,6 @@ def _single_tensor_rmsprop(
     grad_avgs,
     momentum_buffer_list,
     maximize,
-    differentiable,
-    capturable,
-    has_complex,
     lr,
     alpha,
     eps,
@@ -291,7 +288,7 @@ def _single_tensor_rmsprop(
             grad = grad.add(param, alpha=weight_decay)
 
         square_avg = square_avgs[i]
-        square_avg.mul_(alpha).add_(grad * grad, alpha=1 - alpha)
+        square_avg.mul_(alpha).addcmul_(grad, grad, alpha=1 - alpha)
 
         local_square_avg = square_avg
         if centered:
@@ -314,11 +311,7 @@ def _multi_tensor_rmsprop(
     square_avgs,
     grad_avgs,
     momentum_buffer_list,
-    state_steps,
     maximize,
-    differentiable,
-    capturable,
-    has_complex,
     lr,
     alpha,
     eps,
@@ -335,7 +328,6 @@ def rmsprop(
     square_avgs,
     grad_avgs,
     momentum_buffer_list,
-    state_steps,
     foreach=None,
     maximize=False,
     differentiable=False,
@@ -360,11 +352,7 @@ def rmsprop(
         square_avgs,
         grad_avgs,
         momentum_buffer_list,
-        state_steps,
         maximize,
-        differentiable,
-        capturable,
-        has_complex,
         lr,
         alpha,
         eps,
@@ -428,11 +416,16 @@ class RMSprop(Optimizer):
 
                     state = self.state[p]
                     if len(state) == 0:
-                        square_avgs.append(torch.zeros_like(p))
+                        state["square_avg"] = torch.zeros_like(p)
                         if group["centered"]:
-                            grad_avgs.append(torch.zeros_like(p))
+                            state["grad_avg"] = torch.zeros_like(p)
                         if group["momentum"]:
-                            momentum_buffer_list.append(torch.zeros_like(p))
+                            state["momentum_buffer"] = torch.zeros_like(p)
+                    square_avgs.append(state["square_avg"])
+                    grad_avgs.append(state["grad_avg"] if group["centered"] else None)
+                    momentum_buffer_list.append(
+                        state["momentum_buffer"] if group["momentum"] else None
+                    )
 
                 rmsprop(
                     params_with_grad,
@@ -453,6 +446,7 @@ class RMSprop(Optimizer):
                     centered=group["centered"],
                 )
 
+                # Redundant if all mutates in place as list holds the reference to state.
                 for p, square_avg, grad_avg, momentum_buf in zip(
                     params_with_grad,
                     square_avgs,
