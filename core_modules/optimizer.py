@@ -788,3 +788,83 @@ class Adam(Optimizer):
                 )
 
         return loss
+
+
+def adamw(
+    params,
+    grads,
+    exp_avgs,
+    exp_avg_sqs,
+    max_exp_avg_sqs,
+    state_steps,
+    foreach=None,
+    capturable=False,
+    differentiable=False,
+    fused=None,
+    grad_scale=None,
+    found_inf=None,
+    has_complex=False,
+    *,
+    amsgrad,
+    beta1,
+    beta2,
+    lr,
+    weight_decay,
+    eps,
+    maximize,
+):
+    return adam(
+        params,
+        grads,
+        exp_avgs,
+        exp_avg_sqs,
+        max_exp_avg_sqs,
+        state_steps,
+        foreach=foreach,
+        capturable=capturable,
+        differentiable=differentiable,
+        fused=fused,
+        grad_scale=grad_scale,
+        found_inf=found_inf,
+        has_complex=has_complex,
+        decoupled_weight_decay=True,
+        amsgrad=amsgrad,
+        beta1=beta1,
+        beta2=beta2,
+        lr=lr,
+        weight_decay=weight_decay,
+        eps=eps,
+        maximize=maximize,
+    )
+
+
+class AdamW(Adam):
+    def __init__(
+        self,
+        params,
+        lr=0.001,
+        betas=(0.9, 0.999),
+        eps=1e-08,
+        weight_decay=0,
+        amsgrad=False,
+        *,
+        maximize=False,
+        foreach=None,
+        capturable=False,
+        differentiable=False,
+        fused=None,
+    ):
+        super().__init__(
+            params,
+            lr,
+            betas,
+            eps,
+            weight_decay,
+            amsgrad,
+            foreach=foreach,
+            maximize=maximize,
+            capturable=capturable,
+            differentiable=differentiable,
+            fused=fused,
+            decoupled_weight_decay=True,
+        )
