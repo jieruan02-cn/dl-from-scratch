@@ -535,7 +535,28 @@ def _single_tensor_adam(
     eps,
     maximize,
 ):
-    pass
+    lr = _to_scalar(lr)
+    for i, param in enumerate(params):
+        grad = -grads[i] if maximize else grads[i]
+        if weight_decay != 0.0:
+            grad = grad.add(param, alpha=weight_decay)
+
+        t = state_steps[i].add_(1).item()
+        exp_avg = exp_avgs[i]
+        exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
+        normed_exp_avg = exp_avg.div(1 - beta1**t)
+
+        exp_avg_sq = exp_avg_sqs[i]
+        exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+        if amsgrad:
+            max_exp_avg_sq = max_exp_avg_sqs[i]
+            max_exp_avg_sq.clamp_(min=exp_avg_sq)
+            normed_exp_avg_sq = max_exp_avg_sq.div(1 - beta2**t)
+        else:
+            normed_exp_avg_sq = exp_avg_sq.div(1 - beta2**t)
+        normed_exp_avg_sq.sqrt_().add_(eps)
+
+        param.addcdiv_(normed_exp_avg, normed_exp_avg_sq, value=-lr)
 
 
 def _multi_tensor_adam(
