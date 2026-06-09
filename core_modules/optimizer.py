@@ -539,7 +539,10 @@ def _single_tensor_adam(
     for i, param in enumerate(params):
         grad = -grads[i] if maximize else grads[i]
         if weight_decay != 0.0:
-            grad = grad.add(param, alpha=weight_decay)
+            if decoupled_weight_decay:
+                param.mul_(1 - lr * weight_decay)
+            else:
+                grad = grad.add(param, alpha=weight_decay)
 
         t = state_steps[i].add_(1).item()
         exp_avg = exp_avgs[i]
