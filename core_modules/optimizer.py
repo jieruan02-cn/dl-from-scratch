@@ -578,7 +578,59 @@ def _multi_tensor_adam(
     eps,
     maximize,
 ):
-    pass
+    lr = _to_scalar(lr)
+    grouped_tensors = torch.optim.Optimizer._group_tensors_by_device_and_dtype(
+        [params, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps]
+    )
+    for (
+        device_params,
+        device_grads,
+        device_exp_avgs,
+        device_exp_avg_sqs,
+        device_max_exp_avg_sqs,
+        device_state_steps,
+    ), _ in grouped_tensors.values():
+        if maximize:
+            device_grads = torch._foreach_neg(device_grads)
+
+        if weight_decay != 0.0:
+            if decoupled_weight_decay:
+                torch._foreach_mul_(device_params, 1 - lr * weight_decay)
+            elif maximize:
+                torch._foreach_add_(device_grads, device_params, alpha=weight_decay)
+            else:
+                device_grads = torch._foreach_add(
+                    device_grads, device_params, alpha=weight_decay
+                )
+
+        torch._foreach_add_(device_state_steps, 1)
+        torch._foreach_mul_(device_exp_avgs, beta1)
+        torch._foreach_add_(device_exp_avgs, device_grads, alpha=1 - beta1)
+        bias_correction1 = torch._foreach_pow(beta1, device_state_steps)
+        torch._foreach_neg_(bias_correction1)
+        torch._foreach_add_(bias_correction1, 1)
+        normed_exp_avgs = torch._foreach_div(device_exp_avgs, bias_correction1)
+
+        torch._foreach_mul_(device_exp_avg_sqs, beta2)
+        torch._foreach_addcmul_(
+            device_exp_avg_sqs, device_grads, device_grads, 1 - beta2
+        )
+        bias_correction2 = torch._foreach_pow(beta2, device_state_steps)
+        torch._foreach_neg_(bias_correction2)
+        torch._foreach_add_(bias_correction2, 1)
+        if amsgrad:
+            torch._foreach_clamp_min_(device_max_exp_avg_sqs, device_exp_avg_sqs)
+            normed_exp_avg_sqs = torch._foreach_div(
+                device_max_exp_avg_sqs, bias_correction2
+            )
+        else:
+            normed_exp_avg_sqs = torch._foreach_div(
+                device_exp_avg_sqs, bias_correction2
+            )
+        torch._foreach_sqrt_(normed_exp_avg_sqs)
+        torch._foreach_add_(normed_exp_avg_sqs, eps)
+
+        torch._foreach_addcdiv_(device_params, normed_exp_avgs, normed_exp_avg_sqs, -lr)
 
 
 def adam(
