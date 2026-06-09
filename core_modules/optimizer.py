@@ -1,4 +1,4 @@
-from typing import cast
+import math
 
 import torch
 from collections import defaultdict
@@ -170,9 +170,12 @@ def sgd(
     if fused is not None:
         raise ValueError("fused SGD not supported yet.")
     if foreach is None:
-        func = _single_tensor_sgd
-    else:
+        foreach = False
+
+    if foreach:
         func = _multi_tensor_sgd
+    else:
+        func = _single_tensor_sgd
 
     # grad_scale and found_inf is only for fused implementation.
     func(
@@ -397,9 +400,12 @@ def rmsprop(
     centered,
 ):
     if foreach is None:
-        func = _single_tensor_rmsprop
-    else:
+        foreach = False
+
+    if foreach:
         func = _multi_tensor_rmsprop
+    else:
+        func = _single_tensor_rmsprop
 
     func(
         params,
@@ -547,7 +553,6 @@ def _single_tensor_adam(
         t = state_steps[i].add_(1).item()
         exp_avg = exp_avgs[i]
         exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-
         exp_avg_sq = exp_avg_sqs[i]
         exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
         if amsgrad:
@@ -556,9 +561,10 @@ def _single_tensor_adam(
             normed_exp_avg_sq = max_exp_avg_sq.div(1 - beta2**t)
         else:
             normed_exp_avg_sq = exp_avg_sq.div(1 - beta2**t)
-        normed_exp_avg_sq.sqrt_().add_(eps).mul_(1 - beta1**t)
+        normed_exp_avg_sq.sqrt_().add_(eps)
 
-        param.addcdiv_(exp_avg, normed_exp_avg_sq, value=-lr)
+        # ALU compute optimization to divide the (1 - beta1**t) first
+        param.addcdiv_(exp_avg, normed_exp_avg_sq, value=-lr / (1 - beta1**t))
 
 
 def _multi_tensor_adam(
@@ -578,22 +584,21 @@ def _multi_tensor_adam(
     maximize,
 ):
     lr = _to_scalar(lr)
-    tensor_lists = [params, grads, exp_avgs, exp_avg_sqs, state_steps]
+    tensor_lists = [params, grads, exp_avgs, exp_avg_sqs]
     # Passing list of None will raise in _group_tensors_by_device_and_dtype, so append
     # conditionally.
     if amsgrad:
         tensor_lists.append(max_exp_avg_sqs)
     grouped_tensors = torch.optim.Optimizer._group_tensors_by_device_and_dtype(
-        tensor_lists
+        tensor_lists, with_indices=True
     )
     for (
         device_params,
         device_grads,
         device_exp_avgs,
         device_exp_avg_sqs,
-        device_state_steps,
         *rest,
-    ), _ in grouped_tensors.values():
+    ), indices in grouped_tensors.values():
         if maximize:
             device_grads = torch._foreach_neg(device_grads)
 
@@ -607,35 +612,33 @@ def _multi_tensor_adam(
                     device_grads, device_params, alpha=weight_decay
                 )
 
-        torch._foreach_add_(device_state_steps, 1)
         torch._foreach_mul_(device_exp_avgs, beta1)
         torch._foreach_add_(device_exp_avgs, device_grads, alpha=1 - beta1)
-
         torch._foreach_mul_(device_exp_avg_sqs, beta2)
         torch._foreach_addcmul_(
             device_exp_avg_sqs, device_grads, device_grads, 1 - beta2
         )
-        bias_correction2 = torch._foreach_pow(beta2, device_state_steps)
-        torch._foreach_neg_(bias_correction2)
-        torch._foreach_add_(bias_correction2, 1)
+
+        step_sizes = []
+        bias_correction2_sqrts = []
+        for i in indices:
+            step_t = state_steps[i]
+            step_t.add_(1.0)
+            t = step_t.item()
+            step_sizes.append(-lr / (1 - beta1**t))
+            bias_correction2_sqrts.append(math.sqrt(1 - beta2**t))
         if amsgrad:
             device_max_exp_avg_sqs = rest[0]
             torch._foreach_clamp_min_(device_max_exp_avg_sqs, device_exp_avg_sqs)
-            normed_exp_avg_sqs = torch._foreach_div(
-                device_max_exp_avg_sqs, bias_correction2
-            )
+            normed_exp_avg_sqs = torch._foreach_sqrt(device_max_exp_avg_sqs)
         else:
-            normed_exp_avg_sqs = torch._foreach_div(
-                device_exp_avg_sqs, bias_correction2
-            )
-        torch._foreach_sqrt_(normed_exp_avg_sqs)
+            normed_exp_avg_sqs = torch._foreach_sqrt(device_exp_avg_sqs)
+        torch._foreach_div_(normed_exp_avg_sqs, bias_correction2_sqrts)
         torch._foreach_add_(normed_exp_avg_sqs, eps)
-        bias_correction1 = torch._foreach_pow(beta1, device_state_steps)
-        torch._foreach_neg_(bias_correction1)
-        torch._foreach_add_(bias_correction1, 1)
-        torch._foreach_mul_(normed_exp_avg_sqs, bias_correction1)
 
-        torch._foreach_addcdiv_(device_params, device_exp_avgs, normed_exp_avg_sqs, -lr)
+        torch._foreach_addcdiv_(
+            device_params, device_exp_avgs, normed_exp_avg_sqs, step_sizes
+        )
 
 
 def adam(
@@ -665,9 +668,12 @@ def adam(
     if fused is not None:
         raise ValueError("fused adam not supported yet.")
     if foreach is None:
-        func = _single_tensor_adam
-    else:
+        foreach = False
+
+    if foreach:
         func = _multi_tensor_adam
+    else:
+        func = _single_tensor_adam
 
     return func(
         params,
@@ -750,7 +756,8 @@ class Adam(Optimizer):
                         state["max_exp_avg_sqs"] = (
                             torch.zeros_like(p) if group["amsgrad"] else None
                         )
-                        state["state_steps"] = torch.zeros((), device=p.device)
+                        # FORCE CPU: This guarantees .item() will be instantaneous
+                        state["state_steps"] = torch.tensor(0.0)
 
                     exp_avgs.append(state["exp_avgs"])
                     exp_avg_sqs.append(state["exp_avg_sqs"])
