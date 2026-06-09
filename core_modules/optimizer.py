@@ -547,7 +547,6 @@ def _single_tensor_adam(
         t = state_steps[i].add_(1).item()
         exp_avg = exp_avgs[i]
         exp_avg.mul_(beta1).add_(grad, alpha=1 - beta1)
-        normed_exp_avg = exp_avg.div(1 - beta1**t)
 
         exp_avg_sq = exp_avg_sqs[i]
         exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
@@ -557,9 +556,9 @@ def _single_tensor_adam(
             normed_exp_avg_sq = max_exp_avg_sq.div(1 - beta2**t)
         else:
             normed_exp_avg_sq = exp_avg_sq.div(1 - beta2**t)
-        normed_exp_avg_sq.sqrt_().add_(eps)
+        normed_exp_avg_sq.sqrt_().add_(eps).mul_(1 - beta1**t)
 
-        param.addcdiv_(normed_exp_avg, normed_exp_avg_sq, value=-lr)
+        param.addcdiv_(exp_avg, normed_exp_avg_sq, value=-lr)
 
 
 def _multi_tensor_adam(
@@ -579,16 +578,21 @@ def _multi_tensor_adam(
     maximize,
 ):
     lr = _to_scalar(lr)
+    tensor_lists = [params, grads, exp_avgs, exp_avg_sqs, state_steps]
+    # Passing list of None will raise in _group_tensors_by_device_and_dtype, so append
+    # conditionally.
+    if amsgrad:
+        tensor_lists.append(max_exp_avg_sqs)
     grouped_tensors = torch.optim.Optimizer._group_tensors_by_device_and_dtype(
-        [params, grads, exp_avgs, exp_avg_sqs, max_exp_avg_sqs, state_steps]
+        tensor_lists
     )
     for (
         device_params,
         device_grads,
         device_exp_avgs,
         device_exp_avg_sqs,
-        device_max_exp_avg_sqs,
         device_state_steps,
+        *rest,
     ), _ in grouped_tensors.values():
         if maximize:
             device_grads = torch._foreach_neg(device_grads)
@@ -606,10 +610,6 @@ def _multi_tensor_adam(
         torch._foreach_add_(device_state_steps, 1)
         torch._foreach_mul_(device_exp_avgs, beta1)
         torch._foreach_add_(device_exp_avgs, device_grads, alpha=1 - beta1)
-        bias_correction1 = torch._foreach_pow(beta1, device_state_steps)
-        torch._foreach_neg_(bias_correction1)
-        torch._foreach_add_(bias_correction1, 1)
-        normed_exp_avgs = torch._foreach_div(device_exp_avgs, bias_correction1)
 
         torch._foreach_mul_(device_exp_avg_sqs, beta2)
         torch._foreach_addcmul_(
@@ -619,6 +619,7 @@ def _multi_tensor_adam(
         torch._foreach_neg_(bias_correction2)
         torch._foreach_add_(bias_correction2, 1)
         if amsgrad:
+            device_max_exp_avg_sqs = rest[0]
             torch._foreach_clamp_min_(device_max_exp_avg_sqs, device_exp_avg_sqs)
             normed_exp_avg_sqs = torch._foreach_div(
                 device_max_exp_avg_sqs, bias_correction2
@@ -629,8 +630,12 @@ def _multi_tensor_adam(
             )
         torch._foreach_sqrt_(normed_exp_avg_sqs)
         torch._foreach_add_(normed_exp_avg_sqs, eps)
+        bias_correction1 = torch._foreach_pow(beta1, device_state_steps)
+        torch._foreach_neg_(bias_correction1)
+        torch._foreach_add_(bias_correction1, 1)
+        torch._foreach_mul_(normed_exp_avg_sqs, bias_correction1)
 
-        torch._foreach_addcdiv_(device_params, normed_exp_avgs, normed_exp_avg_sqs, -lr)
+        torch._foreach_addcdiv_(device_params, device_exp_avgs, normed_exp_avg_sqs, -lr)
 
 
 def adam(
