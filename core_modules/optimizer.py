@@ -873,7 +873,19 @@ class AdamW(Adam):
 def _single_tensor_adagrad(
     params, grads, state_sums, state_steps, lr, weight_decay, lr_decay, eps, maximize
 ):
-    pass
+    lr = _to_scalar(lr)
+    for param, grad, state_sum, state_step in zip(
+        params, grads, state_sums, state_steps
+    ):
+        if maximize:
+            grad = -grad
+        step_t = state_step.add_(1).item()
+        step_size = -lr / (1 + (step_t - 1) * lr_decay)
+
+        if weight_decay != 0.0:
+            grad = grad.add(param, alpha=weight_decay)
+        state_sum.addcmul_(grad, grad)
+        param.addcdiv_(grad, state_sum.sqrt().add_(eps), value=step_size)
 
 
 def _multi_tensor_adagrad(
