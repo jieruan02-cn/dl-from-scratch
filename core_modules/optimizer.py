@@ -868,3 +868,146 @@ class AdamW(Adam):
             fused=fused,
             decoupled_weight_decay=True,
         )
+
+
+def _single_tensor_adagrad(
+    params, grads, state_sums, state_steps, lr, weight_decay, lr_decay, eps, maximize
+):
+    pass
+
+
+def _multi_tensor_adagrad(
+    params, grads, state_sums, state_steps, lr, weight_decay, lr_decay, eps, maximize
+):
+    pass
+
+
+def adagrad(
+    params,
+    grads,
+    state_sums,
+    state_steps,
+    fused=None,
+    grad_scale=None,
+    found_inf=None,
+    has_sparse_grad=False,
+    foreach=None,
+    differentiable=False,
+    has_complex=False,
+    *,
+    lr,
+    weight_decay,
+    lr_decay,
+    eps,
+    maximize,
+):
+    if fused is not None:
+        raise ValueError("fused adagrad not supported yet.")
+    if foreach is None:
+        foreach = False
+
+    if foreach:
+        func = _multi_tensor_adagrad
+    else:
+        func = _single_tensor_adagrad
+
+    func(
+        params,
+        grads,
+        state_sums,
+        state_steps,
+        lr,
+        weight_decay,
+        lr_decay,
+        eps,
+        maximize,
+    )
+
+
+class Adagrad(Optimizer):
+    def __init__(
+        self,
+        params,
+        lr=0.01,
+        lr_decay=0,
+        weight_decay=0,
+        initial_accumulator_value=0,
+        eps=1e-10,
+        foreach=None,
+        *,
+        maximize=False,
+        differentiable=False,
+        fused=None,
+    ):
+        defaults = {
+            "lr": lr,
+            "lr_decay": lr_decay,
+            "weight_decay": weight_decay,
+            "initial_accumulator_value": initial_accumulator_value,
+            "eps": eps,
+            "foreach": foreach,
+            "maximize": maximize,
+            "differentiable": differentiable,
+            "fused": fused,
+        }
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            with torch.set_grad_enabled(group["differentiable"]):
+                params_with_grad = []
+                grads = []
+                state_sums = []
+                state_steps = []
+                grad_scale, found_inf, has_sparse_grad, has_complex = (
+                    None,
+                    None,
+                    False,
+                    False,
+                )
+                for p in group["params"]:
+                    if p.grad is None:
+                        continue
+                    if torch.isinf(p.grad).any():
+                        found_inf = True
+                    if p.grad.is_sparse:
+                        has_sparse_grad = True
+                    if torch.is_complex(p):
+                        has_complex = True
+                    params_with_grad.append(p)
+                    grads.append(p.grad)
+                    state = self.state[p]
+
+                    if len(state) == 0:
+                        state["state_sums"] = torch.full_like(
+                            p, group["initial_accumulator_value"]
+                        )
+                        state["state_steps"] = torch.tensor(0.0)
+                    state_sums.append(state["state_sums"])
+                    state_steps.append(state["state_steps"])
+
+                adagrad(
+                    params_with_grad,
+                    grads,
+                    state_sums,
+                    state_steps,
+                    group["fused"],
+                    grad_scale,
+                    found_inf,
+                    has_sparse_grad,
+                    group["foreach"],
+                    group["differentiable"],
+                    has_complex,
+                    lr=group["lr"],
+                    weight_decay=group["weight_decay"],
+                    lr_decay=group["lr_decay"],
+                    eps=group["eps"],
+                    maximize=group["maximize"],
+                )
+
+        return loss
