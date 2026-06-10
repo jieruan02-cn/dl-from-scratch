@@ -879,19 +879,49 @@ def _single_tensor_adagrad(
     ):
         if maximize:
             grad = -grad
+        if weight_decay != 0.0:
+            if maximize:
+                grad.add_(param, alpha=weight_decay)
+            else:
+                grad = grad.add(param, alpha=weight_decay)
+        state_sum.addcmul_(grad, grad)
+
         step_t = state_step.add_(1).item()
         step_size = -lr / (1 + (step_t - 1) * lr_decay)
-
-        if weight_decay != 0.0:
-            grad = grad.add(param, alpha=weight_decay)
-        state_sum.addcmul_(grad, grad)
         param.addcdiv_(grad, state_sum.sqrt().add_(eps), value=step_size)
 
 
 def _multi_tensor_adagrad(
     params, grads, state_sums, state_steps, lr, weight_decay, lr_decay, eps, maximize
 ):
-    pass
+    lr = _to_scalar(lr)
+    group_tensors = torch.optim.Optimizer._group_tensors_by_device_and_dtype(
+        [params, grads, state_sums], with_indices=True
+    )
+    for (
+        device_params,
+        device_grads,
+        device_state_sums,
+    ), indices in group_tensors.values():
+        if maximize:
+            device_grads = torch._foreach_neg(device_grads)
+        if weight_decay != 0.0:
+            if maximize:
+                torch._foreach_add_(device_grads, device_params, alpha=weight_decay)
+            else:
+                device_grads = torch._foreach_add(
+                    device_grads, device_params, alpha=weight_decay
+                )
+        torch._foreach_addcmul_(device_state_sums, device_grads, device_grads)
+
+        step_sizes = []
+        for i in indices:
+            step_t = state_steps[i]
+            step_t.add_(1.0)
+            step_sizes.append(-lr / (1 + (step_t.item() - 1) * lr_decay))
+        denom = torch._foreach_sqrt(device_state_sums)
+        torch._foreach_add_(denom, eps)
+        torch._foreach_addcdiv_(device_params, device_grads, denom, step_sizes)
 
 
 def adagrad(
