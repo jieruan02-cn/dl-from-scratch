@@ -1053,3 +1053,60 @@ class Adagrad(Optimizer):
                 )
 
         return loss
+
+
+class Adafactor(Optimizer):
+    def __init__(
+        self,
+        params,
+        lr=0.01,
+        beta2_decay=-0.8,
+        eps=(None, 0.001),
+        d=1.0,
+        weight_decay=0.0,
+        *,
+        foreach=None,
+        maximize=False,
+    ):
+        defaults = {
+            "lr": lr,
+            "beta2_decay": beta2_decay,
+            "eps": eps,
+            "d": d,
+            "weight_decay": weight_decay,
+            "foreach": foreach,
+            "maximize": maximize,
+        }
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                state = self.state[p]
+                if len(state) == 0:
+                    state_step = torch.tensor(0.0)
+                else:
+                    state_step = state["state_step"]
+
+                grad = -p.grad if group["maximize"] else p.grad
+                step_t = state_step.add_(1.0).item()
+                beta2_decay = group["beta2_decay"]
+                lr = _to_scalar(group["lr"])
+                eps1, eps2 = group["eps"]
+                weight_decay = group["weight_decay"]
+
+                beta2 = 1 - step_t**beta2_decay
+                rho = min(lr, 1 / math.sqrt(step_t))
+                alpha = rho * max(eps2, (p * p).div_(p.numel()).sqrt())
+                p.mul_(1 - lr * weight_decay)
+                if grad.dim() > 1:
+                    pass
+
+        return loss
