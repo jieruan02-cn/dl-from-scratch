@@ -1090,9 +1090,17 @@ class Adafactor(Optimizer):
             loss = closure()
 
         for group in self.param_groups:
+            lr = _to_scalar(group["lr"])
+            beta2_decay = group["beta2_decay"]
+            eps1, eps2 = group["eps"]
+            weight_decay = group["weight_decay"]
+            maximize = group["maximize"]
+
             for p in group["params"]:
                 if p.grad is None:
                     continue
+                if eps1 is None:
+                    eps1 = torch.finfo(p.dtype).eps
 
                 config = {"device": p.device, "dtype": p.dtype}
                 state = self.state[p]
@@ -1112,18 +1120,12 @@ class Adafactor(Optimizer):
                     col_factor = state["col_factor"]
                 else:
                     second_moment = state["second_moment"]
-                lr = _to_scalar(group["lr"])
-                beta2_decay = group["beta2_decay"]
-                eps1, eps2 = group["eps"]
-                if eps1 is None:
-                    eps1 = torch.finfo(p.dtype).eps
-                weight_decay = group["weight_decay"]
 
                 step_t = state_step.add_(1.0).item()
                 beta2, rho = 1 - step_t**beta2_decay, min(lr, 1 / math.sqrt(step_t))
                 alpha = rho * rms(p).clamp(min=eps2)
 
-                grad = -p.grad if group["maximize"] else p.grad.clone()
+                grad = -p.grad if maximize else p.grad.clone()
                 p.mul_(1 - lr * weight_decay)
                 if p.dim() > 1:
                     grad_prod = grad * grad
@@ -1144,5 +1146,72 @@ class Adafactor(Optimizer):
                 # synchronization, need to work on tensor space
                 grad.mul_(-alpha / (rms(grad) / group["d"]).clamp_(min=1.0))
                 p.add_(grad)
+
+        return loss
+
+
+def newton_schulz(a, b, c, eps, x):
+    pass
+
+
+class Muon(Optimizer):
+    def __init__(
+        self,
+        params,
+        lr=0.001,
+        weight_decay=0.1,
+        momentum=0.95,
+        nesterov=True,
+        ns_coefficients=(3.4445, -4.774, 2.0315),
+        eps=1e-07,
+        ns_steps=5,
+        adjust_lr_fn=None,
+    ):
+        defaults = {
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "momentum": momentum,
+            "nesterov": nesterov,
+            "ns_coefficients": ns_coefficients,
+            "eps": eps,
+            "ns_steps": ns_steps,
+            "adjust_lr_fn": adjust_lr_fn,
+        }
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            loss = closure()
+
+        for group in self.param_groups:
+            weight_decay = group["weight_decay"]
+            momentum = group["momentum"]
+            nesterov = group["nesterov"]
+            a, b, c = group["ns_coefficients"]
+            eps = group["eps"]
+            adjust_lr_fn = group["adjust_lr_fn"]
+
+            for param in group["params"]:
+                if param.grad is None:
+                    continue
+
+                state = self.state[param]
+                if len(state) == 0:
+                    state["lr"] = group["lr"]
+                    state["momentum_buffer"] = torch.zeros_like(param)
+                momentum_buf = state["momentum_buffer"]
+                momentum_buf.mul_(momentum).add_(param.grad)
+                if nesterov:
+                    nesterov_momentum = momentum_buf.mul(momentum).add_(param.grad)
+                else:
+                    nesterov_momentum = momentum_buf
+                orthogonal_factor = newton_schulz(a, b, c, eps, nesterov_momentum)
+
+                if adjust_lr_fn is not None:
+                    state["lr"] = adjust_lr_fn(state["lr"], param.shape)
+                lr = _to_scalar(state["lr"])
+                param.mul_(1 - lr * weight_decay).add_(orthogonal_factor, alpha=-lr)
 
         return loss
