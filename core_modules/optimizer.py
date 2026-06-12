@@ -1150,8 +1150,17 @@ class Adafactor(Optimizer):
         return loss
 
 
-def newton_schulz(a, b, c, eps, x):
-    pass
+def newton_schulz(a, b, c, eps, k, x):
+    # x = x.to(torch.bfloat16) in real impl for speed, here keep fp32 for precision.
+    x = x / torch.linalg.matrix_norm(x, ord="fro").clamp(min=eps)
+    for _ in range(k):
+        if x.shape[-2] > x.shape[-1]:
+            cov = x.T @ x
+            x = x @ torch.addmm(cov, cov, cov, beta=b, alpha=c).add_(a)
+        else:
+            cov = x @ x.T
+            x = torch.addmm(cov, cov, cov, beta=b, alpha=c).add_(a) @ x
+    return x
 
 
 class Muon(Optimizer):
@@ -1162,7 +1171,7 @@ class Muon(Optimizer):
         weight_decay=0.1,
         momentum=0.95,
         nesterov=True,
-        ns_coefficients=(3.4445, -4.774, 2.0315),
+        ns_coefficients=(3.4445, -4.775, 2.0315),
         eps=1e-07,
         ns_steps=5,
         adjust_lr_fn=None,
@@ -1179,6 +1188,9 @@ class Muon(Optimizer):
         }
         super().__init__(params, defaults)
 
+        if any(p.dim() != 2 for group in self.param_groups for p in group["params"]):
+            raise ValueError("only accept param of 2D.")
+
     @torch.no_grad()
     def step(self, closure=None):
         loss = None
@@ -1191,6 +1203,7 @@ class Muon(Optimizer):
             nesterov = group["nesterov"]
             a, b, c = group["ns_coefficients"]
             eps = group["eps"]
+            ns_steps = group["ns_steps"]
             adjust_lr_fn = group["adjust_lr_fn"]
 
             for param in group["params"]:
@@ -1199,7 +1212,6 @@ class Muon(Optimizer):
 
                 state = self.state[param]
                 if len(state) == 0:
-                    state["lr"] = group["lr"]
                     state["momentum_buffer"] = torch.zeros_like(param)
                 momentum_buf = state["momentum_buffer"]
                 momentum_buf.mul_(momentum).add_(param.grad)
@@ -1207,11 +1219,17 @@ class Muon(Optimizer):
                     nesterov_momentum = momentum_buf.mul(momentum).add_(param.grad)
                 else:
                     nesterov_momentum = momentum_buf
-                orthogonal_factor = newton_schulz(a, b, c, eps, nesterov_momentum)
+                orthogonal_momentum = newton_schulz(
+                    a, b, c, eps, ns_steps, nesterov_momentum
+                )
+
+                lr = _to_scalar(group["lr"])
+                param.mul_(1 - lr * weight_decay)
 
                 if adjust_lr_fn is not None:
-                    state["lr"] = adjust_lr_fn(state["lr"], param.shape)
-                lr = _to_scalar(state["lr"])
-                param.mul_(1 - lr * weight_decay).add_(orthogonal_factor, alpha=-lr)
+                    lr = adjust_lr_fn(lr, param.shape)
+                else:
+                    lr = lr * math.sqrt(max(1.0, param.shape[-2] / param.shape[-1]))
+                param.add_(orthogonal_momentum, alpha=-lr)
 
         return loss
