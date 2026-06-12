@@ -693,10 +693,6 @@ def adam(
     )
 
 
-def rms(x):
-    return torch.linalg.norm(x / math.sqrt(x.numel()))
-
-
 class Adam(Optimizer):
     def __init__(
         self,
@@ -1059,6 +1055,10 @@ class Adagrad(Optimizer):
         return loss
 
 
+def rms(x):
+    return x.pow(2).mean().sqrt_()
+
+
 class Adafactor(Optimizer):
     def __init__(
         self,
@@ -1121,7 +1121,7 @@ class Adafactor(Optimizer):
 
                 step_t = state_step.add_(1.0).item()
                 beta2, rho = 1 - step_t**beta2_decay, min(lr, 1 / math.sqrt(step_t))
-                alpha = rho * max(eps2, rms(p))
+                alpha = rho * rms(p).clamp(min=eps2)
 
                 grad = -p.grad if group["maximize"] else p.grad.clone()
                 p.mul_(1 - lr * weight_decay)
@@ -1133,13 +1133,16 @@ class Adafactor(Optimizer):
                     col_factor.mul_(beta2).add_(
                         grad_prod.sum(dim=-1, keepdim=True), alpha=1 - beta2
                     )
-                    second_moment = (row_factor * col_factor).div_(
-                        row_factor.sum(dim=-1, keepdim=True).clamp_(min=eps1)
-                    )
+                    grad.div_(row_factor.sqrt().clamp_(min=eps1))
+                    grad.div_(col_factor.sqrt().clamp_(min=eps1))
+                    grad.mul_(row_factor.sum(-1, keepdim=True).clamp_(min=eps1).sqrt_())
                 else:
                     second_moment.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+                    grad.div_(second_moment.sqrt().clamp_(min=eps1))
 
-                grad.div_(second_moment.sqrt().clamp_(min=eps1))
-                p.add_(grad, alpha=-alpha / max(rms(grad).item() / group["d"], 1.0))
+                # calling .item() on the rms(grad) tensor will force a CPU-GPU
+                # synchronization, need to work on tensor space
+                grad.mul_(-alpha / (rms(grad) / group["d"]).clamp_(min=1.0))
+                p.add_(grad)
 
         return loss
