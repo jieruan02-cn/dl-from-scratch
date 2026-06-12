@@ -693,6 +693,10 @@ def adam(
     )
 
 
+def rms(x):
+    return torch.linalg.norm(x / math.sqrt(x.numel()))
+
+
 class Adam(Optimizer):
     def __init__(
         self,
@@ -1089,24 +1093,53 @@ class Adafactor(Optimizer):
             for p in group["params"]:
                 if p.grad is None:
                     continue
+
+                config = {"device": p.device, "dtype": p.dtype}
                 state = self.state[p]
                 if len(state) == 0:
-                    state_step = torch.tensor(0.0)
-                else:
-                    state_step = state["state_step"]
+                    state["state_step"] = torch.tensor(0.0)
+                    if p.dim() > 1:
+                        state["row_factor"] = torch.zeros(
+                            p.shape[:-2] + (1, p.shape[-1]), **config
+                        )
+                        state["col_factor"] = torch.zeros(p.shape[:-1] + (1,), **config)
+                    else:
+                        state["second_moment"] = torch.zeros_like(p)
 
-                grad = -p.grad if group["maximize"] else p.grad
-                step_t = state_step.add_(1.0).item()
-                beta2_decay = group["beta2_decay"]
+                state_step = state["state_step"]
+                if p.dim() > 1:
+                    row_factor = state["row_factor"]
+                    col_factor = state["col_factor"]
+                else:
+                    second_moment = state["second_moment"]
                 lr = _to_scalar(group["lr"])
+                beta2_decay = group["beta2_decay"]
                 eps1, eps2 = group["eps"]
+                if eps1 is None:
+                    eps1 = torch.finfo(p.dtype).eps
                 weight_decay = group["weight_decay"]
 
-                beta2 = 1 - step_t**beta2_decay
-                rho = min(lr, 1 / math.sqrt(step_t))
-                alpha = rho * max(eps2, (p * p).div_(p.numel()).sqrt())
+                step_t = state_step.add_(1.0).item()
+                beta2, rho = 1 - step_t**beta2_decay, min(lr, 1 / math.sqrt(step_t))
+                alpha = rho * max(eps2, rms(p))
+
+                grad = -p.grad if group["maximize"] else p.grad.clone()
                 p.mul_(1 - lr * weight_decay)
-                if grad.dim() > 1:
-                    pass
+                if p.dim() > 1:
+                    grad_prod = grad * grad
+                    row_factor.mul_(beta2).add_(
+                        grad_prod.sum(dim=-2, keepdim=True), alpha=1 - beta2
+                    )
+                    col_factor.mul_(beta2).add_(
+                        grad_prod.sum(dim=-1, keepdim=True), alpha=1 - beta2
+                    )
+                    second_moment = (row_factor * col_factor).div_(
+                        row_factor.sum(dim=-1, keepdim=True).clamp_(min=eps1)
+                    )
+                else:
+                    second_moment.mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
+
+                grad.div_(second_moment.sqrt().clamp_(min=eps1))
+                p.add_(grad, alpha=-alpha / max(rms(grad).item() / group["d"], 1.0))
 
         return loss
