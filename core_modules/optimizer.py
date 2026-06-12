@@ -1156,10 +1156,10 @@ def newton_schulz(a, b, c, eps, k, x):
     for _ in range(k):
         if x.shape[-2] > x.shape[-1]:
             cov = x.T @ x
-            x = x @ torch.addmm(cov, cov, cov, beta=b, alpha=c).add_(a)
+            x = torch.addmm(x, x, torch.addmm(cov, cov, cov, beta=b, alpha=c), beta=a)
         else:
             cov = x @ x.T
-            x = torch.addmm(cov, cov, cov, beta=b, alpha=c).add_(a) @ x
+            x = torch.addmm(x, torch.addmm(cov, cov, cov, beta=b, alpha=c), x, beta=a)
     return x
 
 
