@@ -19,22 +19,37 @@ import torch.nn as nn
 # 4. scale_grad_by_freq in PyTorch's context they use the last batch's stat instead of running stat.
 class EmbeddingFunction(torch.autograd.Function):
     @staticmethod
-    def forward(weight, x, padding_idx, scale_grad_by_freq):
-        return weight[x]
+    def forward(
+        weight, input, padding_idx, max_norm, norm_type, scale_grad_by_freq, sparse
+    ):
+        if max_norm is not None:
+            # with torch.no_grad():
+            unique_indices = torch.unique(input)
+            norms = torch.linalg.vector_norm(
+                weight[unique_indices], ord=norm_type, dim=-1
+            )
+            mask = norms > max_norm
+            weight[unique_indices[mask]] *= (max_norm / norms[mask]).unsqueeze(-1)
+
+        # Cannot run register_hook on customized Function as the autograd is disable and
+        # out doesn't require grad. Also the customized backward handle it alread, no
+        # need to re-divide.
+        return weight[input]
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        weight, x, padding_idx, scale_grad_by_freq = inputs
+        weight, input, padding_idx, _, _, scale_grad_by_freq, sparse = inputs
         ctx.embedding_shape = weight.shape
-        ctx.save_for_backward(x)
+        ctx.save_for_backward(input)
         ctx.scale_grad_by_freq = scale_grad_by_freq
         ctx.padding_idx = padding_idx
+        ctx.sparse = sparse
 
     @staticmethod
     def backward(ctx, grad_output):
-        (x,) = ctx.saved_tensors
+        (input,) = ctx.saved_tensors
         unique_x, unique_x_inverse, *rest = torch.unique(
-            x, return_inverse=True, return_counts=ctx.scale_grad_by_freq
+            input, return_inverse=True, return_counts=ctx.scale_grad_by_freq
         )
         values = torch.zeros(
             (unique_x.numel(), ctx.embedding_shape[1]),
@@ -50,13 +65,34 @@ class EmbeddingFunction(torch.autograd.Function):
             values /= rest[0].unsqueeze(-1).to(grad_output.dtype)
         if ctx.padding_idx is not None:
             values[unique_x == ctx.padding_idx] = 0
-        grad_weight = torch.sparse_coo_tensor(
-            indices=unique_x.unsqueeze(0),
-            values=values,
-            size=ctx.embedding_shape,
-            check_invariants=True,
-        )
-        return grad_weight, None, None, None
+
+        if ctx.sparse:
+            grad_weight = torch.sparse_coo_tensor(
+                indices=unique_x.unsqueeze(0),
+                values=values,
+                size=ctx.embedding_shape,
+                check_invariants=True,
+            )
+        else:
+            grad_weight = torch.zeros(
+                ctx.embedding_shape, device=grad_output.device, dtype=grad_output.dtype
+            )
+            grad_weight[unique_x] = values
+        return grad_weight, None, None, None, None, None, None
+
+
+def embedding(
+    input,
+    weight,
+    padding_idx=None,
+    max_norm=None,
+    norm_type=2.0,
+    scale_grad_by_freq=False,
+    sparse=False,
+):
+    return EmbeddingFunction.apply(
+        weight, input, padding_idx, max_norm, norm_type, scale_grad_by_freq, sparse
+    )
 
 
 class Embedding(nn.Module):
@@ -77,7 +113,9 @@ class Embedding(nn.Module):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.padding_idx = padding_idx
+        self.padding_idx = torch.where(
+            padding_idx > 0, padding_idx, num_embeddings + padding_idx
+        )
         self.max_norm = max_norm
         self.norm_type = norm_type
         self.scale_grad_by_freq = scale_grad_by_freq
@@ -92,42 +130,21 @@ class Embedding(nn.Module):
                 requires_grad=not _freeze,
             )
             nn.init.normal_(self.weight)
+            if self.padding_idx is not None:
+                with torch.no_grad():
+                    self.weight[self.padding_idx].fill_(0)
+            # no need to register hook again as the zero grad is done in Customized grad.
 
-        if padding_idx is not None:
-            with torch.no_grad():
-                self.weight[padding_idx].fill_(0)
-            if self.weight.requires_grad and not sparse:
-                self.weight.register_hook(self._zero_pad_grad)
-
-    def forward(self, x):
-        if self.max_norm is not None:
-            with torch.no_grad():
-                unique_indices = torch.unique(x)
-                norms = torch.linalg.vector_norm(
-                    self.weight[unique_indices], ord=self.norm_type, dim=-1
-                )
-                mask = norms > self.max_norm
-                self.weight[unique_indices[mask]] *= (
-                    self.max_norm / norms[mask]
-                ).unsqueeze(-1)
-        if self.sparse:
-            out = EmbeddingFunction.apply(
-                self.weight, x, self.padding_idx, self.scale_grad_by_freq
-            )
-        else:
-            out = self.weight[x]
-
-        if self.weight.requires_grad and self.scale_grad_by_freq and not self.sparse:
-            freq = torch.bincount(x.flatten(), minlength=self.num_embeddings)
-            out.register_hook(
-                lambda grad: grad / freq[x].clamp(min=1).to(grad.dtype).unsqueeze(-1)
-            )
-        return out
-
-    def _zero_pad_grad(self, grad):
-        grad = grad.clone()
-        grad[self.padding_idx] = 0
-        return grad
+    def forward(self, input):
+        return embedding(
+            input,
+            self.weight,
+            self.padding_idx,
+            self.max_norm,
+            self.norm_type,
+            self.scale_grad_by_freq,
+            self.sparse,
+        )
 
 
 class SinusoidalPositionalEncoding(nn.Module):
