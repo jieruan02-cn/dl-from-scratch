@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 
@@ -127,3 +128,25 @@ class Embedding(nn.Module):
         grad = grad.clone()
         grad[self.padding_idx] = 0
         return grad
+
+
+class SinusoidalPositionalEncoding(nn.Module):
+    def __init__(self, in_features, max_window, device=None, dtype=None):
+        super().__init__()
+        self.in_features = in_features
+        self.max_window = max_window
+
+        config = {"device": device, "dtype": torch.float32 if dtype is None else dtype}
+        denom_tensor = torch.arange(0, in_features, **config).unsqueeze(0)
+        denom_tensor[:, 1:in_features:2] -= 1
+        denom_tensor.mul_(math.log(10000) / in_features).exp_()
+        positional_encoding = (
+            torch.arange(0, max_window, **config).unsqueeze(-1) / denom_tensor
+        )
+        positional_encoding[:, 0:in_features:2].sin_()
+        positional_encoding[:, 1:in_features:2].cos_()
+        self.register_buffer("positional_encoding", positional_encoding)
+
+    def forward(self, input):
+        # broadcastable
+        return input + self.positional_encoding[0 : input.size(-2), :]
