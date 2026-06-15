@@ -136,7 +136,7 @@ class SinusoidalPositionalEncoding(nn.Module):
         self.in_features = in_features
         self.max_window = max_window
 
-        config = {"device": device, "dtype": torch.float32 if dtype is None else dtype}
+        config = {"device": device, "dtype": torch.float32}
         denom_tensor = torch.arange(0, in_features, **config).unsqueeze(0)
         denom_tensor[:, 1:in_features:2] -= 1
         denom_tensor.mul_(math.log(10000) / in_features).exp_()
@@ -145,7 +145,10 @@ class SinusoidalPositionalEncoding(nn.Module):
         )
         positional_encoding[:, 0:in_features:2].sin_()
         positional_encoding[:, 1:in_features:2].cos_()
-        self.register_buffer("positional_encoding", positional_encoding)
+        if dtype is not None:
+            positional_encoding = positional_encoding.to(dtype)
+        # Set persistent=False to save memory in checkpoint as it won't enter state_dict.
+        self.register_buffer("positional_encoding", positional_encoding, False)
 
     def forward(self, input):
         # broadcastable
