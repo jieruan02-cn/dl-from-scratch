@@ -113,9 +113,9 @@ class Embedding(nn.Module):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.padding_idx = torch.where(
-            padding_idx > 0, padding_idx, num_embeddings + padding_idx
-        )
+        self.padding_idx = padding_idx
+        if padding_idx is not None and padding_idx < 0:
+            self.padding_idx += num_embeddings
         self.max_norm = max_norm
         self.norm_type = norm_type
         self.scale_grad_by_freq = scale_grad_by_freq
