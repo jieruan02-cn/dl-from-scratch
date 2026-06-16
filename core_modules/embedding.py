@@ -147,6 +147,96 @@ class Embedding(nn.Module):
         )
 
 
+class EmbeddingBagFunction(torch.autograd.Function):
+    @staticmethod
+    def forward():
+        pass
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        pass
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        pass
+
+
+def embedding_bag(
+    input,
+    weight,
+    offsets=None,
+    max_norm=None,
+    norm_type=2,
+    scale_grad_by_freq=False,
+    mode="mean",
+    sparse=False,
+    per_sample_weights=None,
+    include_last_offset=False,
+    padding_idx=None,
+):
+    return EmbeddingBagFunction.apply(
+        input,
+        weight,
+        offsets,
+        max_norm,
+        norm_type,
+        scale_grad_by_freq,
+        mode,
+        sparse,
+        per_sample_weights,
+        include_last_offset,
+        padding_idx,
+    )
+
+
+class EmbeddingBag(Embedding):
+    def __init__(
+        self,
+        num_embeddings,
+        embedding_dim,
+        max_norm=None,
+        norm_type=2.0,
+        scale_grad_by_freq=False,
+        mode="mean",
+        sparse=False,
+        _weight=None,
+        include_last_offset=False,
+        padding_idx=None,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__(
+            num_embeddings,
+            embedding_dim,
+            padding_idx,
+            max_norm,
+            norm_type,
+            scale_grad_by_freq,
+            sparse,
+            _weight,
+            True,
+            device,
+            dtype,
+        )
+        self.mode = mode
+        self.include_last_offset = include_last_offset
+
+    def forward(self, input, offsets=None, per_sample_weights=None):
+        return embedding_bag(
+            input,
+            self.weight,
+            offsets,
+            self.max_norm,
+            self.norm_type,
+            self.scale_grad_by_freq,
+            self.mode,
+            self.sparse,
+            per_sample_weights,
+            self.include_last_offset,
+            self.padding_idx,
+        )
+
+
 class SinusoidalPositionalEncoding(nn.Module):
     def __init__(self, in_features, max_window, device=None, dtype=None):
         super().__init__()
