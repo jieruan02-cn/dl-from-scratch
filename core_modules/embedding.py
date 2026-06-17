@@ -23,7 +23,7 @@ class EmbeddingFunction(torch.autograd.Function):
         weight, input, padding_idx, max_norm, norm_type, scale_grad_by_freq, sparse
     ):
         if max_norm is not None:
-            # with torch.no_grad():
+            # no need for "with torch.no_grad():" as customized Function forward is in no grad.
             unique_indices = torch.unique(input)
             norms = torch.linalg.vector_norm(
                 weight[unique_indices], ord=norm_type, dim=-1
@@ -149,8 +149,28 @@ class Embedding(nn.Module):
 
 class EmbeddingBagFunction(torch.autograd.Function):
     @staticmethod
-    def forward():
-        pass
+    def forward(
+        input,
+        weight,
+        offsets,
+        max_norm,
+        norm_type,
+        scale_grad_by_freq,
+        mode,
+        sparse,
+        per_sample_weight,
+        include_last_offset,
+        padding_idx,
+    ):
+        if max_norm is not None:
+            unique_indices = torch.unique(input)
+            norms = torch.linalg.vector_norm(
+                weight[unique_indices], ord=norm_type, dim=-1
+            )
+            mask = norms > max_norm
+            weight[unique_indices[mask]] *= (max_norm / norms[mask]).unsqueeze(-1)
+
+        # out = torch.zeros(input.shape[:-1] + (weight.size(-1),), device=)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
