@@ -171,6 +171,7 @@ class EmbeddingBagFunction(torch.autograd.Function):
             weight[unique_indices[mask]] *= (max_norm / norms[mask]).unsqueeze(-1)
 
         # out = torch.zeros(input.shape[:-1] + (weight.size(-1),), device=)
+        # look up index_put
 
     @staticmethod
     def setup_context(ctx, inputs, output):
