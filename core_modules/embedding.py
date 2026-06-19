@@ -170,8 +170,41 @@ class EmbeddingBagFunction(torch.autograd.Function):
             mask = norms > max_norm
             weight[unique_indices[mask]] *= (max_norm / norms[mask]).unsqueeze(-1)
 
-        # out = torch.zeros(input.shape[:-1] + (weight.size(-1),), device=)
-        # look up index_put.
+        if offsets is None:
+            offsets = torch.arange(0, input.numel(), input.size(-1))
+            index = torch.arange(0, input.size(0)).repeat_interleave(input.size(-1))
+            input_view = input.reshape(-1)
+        else:
+            if include_last_offset:
+                offsets = offsets[:-1]
+            index = (
+                (torch.arange(0, input.size(0)).unsqueeze(0) >= offsets.unsqueeze(-1))
+                .sum(dim=0)
+                .sub_(1)
+            )
+            input_view = input
+
+        # Note this implementation doesn't achieve the memory saving as in
+        # torch.EmbeddingBag, as that type of reduction requires ATen kernel and no torch
+        # API ops can achieve the memory and latency requirement at the same time.
+        out = torch.index_reduce(
+            input=torch.zeros(
+                (offsets.numel(), weight.size(1)),
+                device=weight.device,
+                dtype=weight.dtype,
+            ),
+            dim=0,
+            index=index,
+            source=weight[input_view]
+            if per_sample_weight is None
+            else weight[input_view] * per_sample_weight.reshape(-1).unsqueeze(-1),
+            reduce="amax" if mode == "max" else "mean",
+            include_self=False,
+        )
+        if mode == "sum":
+            _, counts = torch.unique(index, return_counts=True)
+            out.mul_(counts.unsqueeze(-1))
+        return out
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -179,7 +212,7 @@ class EmbeddingBagFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        pass
+        (input,) = ctx.saved_tensors
 
 
 def embedding_bag(
