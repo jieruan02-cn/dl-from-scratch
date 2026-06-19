@@ -172,17 +172,21 @@ class EmbeddingBagFunction(torch.autograd.Function):
 
         if offsets is None:
             offsets = torch.arange(0, input.numel(), input.size(-1))
-            index = torch.arange(0, input.size(0)).repeat_interleave(input.size(-1))
-            input_view = input.reshape(-1)
-        else:
-            if include_last_offset:
-                offsets = offsets[:-1]
-            index = (
-                (torch.arange(0, input.size(0)).unsqueeze(0) >= offsets.unsqueeze(-1))
-                .sum(dim=0)
-                .sub_(1)
-            )
-            input_view = input
+        elif include_last_offset:
+            offsets = offsets[:-1]
+        input_view = input.reshape(-1)
+
+        if padding_idx is not None:
+            mask = input_view == padding_idx
+            input_view = input_view[~mask]
+            accum_mask = mask.cumsum(dim=0)
+            offsets = offsets.add(mask[offsets]).sub_(accum_mask[offsets])
+
+        index = (
+            (torch.arange(0, input_view.numel()).unsqueeze(0) >= offsets.unsqueeze(-1))
+            .sum(dim=0)
+            .sub_(1)
+        )
 
         # Note this implementation doesn't achieve the memory saving as in
         # torch.EmbeddingBag, as that type of reduction requires ATen kernel and no torch
@@ -202,8 +206,12 @@ class EmbeddingBagFunction(torch.autograd.Function):
             include_self=False,
         )
         if mode == "sum":
-            _, counts = torch.unique(index, return_counts=True)
-            out.mul_(counts.unsqueeze(-1))
+            # unique_indices, counts = torch.unique(index, return_counts=True)
+            # scale = torch.zeros((out.size(0),), device=out.device, dtype=out.dtype)
+            # scale[unique_indices] = counts
+            # torch.unique is more tedious while bincount is most suitable here.
+            freq = torch.bincount(index, minlength=out.size(0))
+            out.mul_(freq.unsqueeze(-1))
         return out
 
     @staticmethod
