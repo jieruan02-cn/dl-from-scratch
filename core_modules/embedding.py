@@ -175,12 +175,19 @@ class EmbeddingBagFunction(torch.autograd.Function):
         elif include_last_offset:
             offsets = offsets[:-1]
         input_view = input.reshape(-1)
+        per_sample_weight_view = (
+            per_sample_weight
+            if per_sample_weight is None
+            else per_sample_weight.reshape(-1)
+        )
 
         if padding_idx is not None:
             mask = input_view == padding_idx
             input_view = input_view[~mask]
             accum_mask = mask.cumsum(dim=0)
             offsets = offsets.add(mask[offsets]).sub_(accum_mask[offsets])
+            if per_sample_weight is not None:
+                per_sample_weight_view = per_sample_weight_view[~mask]
 
         index = (
             (torch.arange(0, input_view.numel()).unsqueeze(0) >= offsets.unsqueeze(-1))
@@ -200,8 +207,8 @@ class EmbeddingBagFunction(torch.autograd.Function):
             dim=0,
             index=index,
             source=weight[input_view]
-            if per_sample_weight is None
-            else weight[input_view] * per_sample_weight.reshape(-1).unsqueeze(-1),
+            if per_sample_weight_view is None
+            else weight[input_view] * per_sample_weight_view.unsqueeze(-1),
             reduce="amax" if mode == "max" else "mean",
             include_self=False,
         )
