@@ -150,6 +150,7 @@ class Embedding(nn.Module):
 class EmbeddingBagFunction(torch.autograd.Function):
     @staticmethod
     def forward(
+        ctx,
         input,
         weight,
         offsets,
@@ -219,15 +220,41 @@ class EmbeddingBagFunction(torch.autograd.Function):
             # torch.unique is more tedious while bincount is most suitable here.
             freq = torch.bincount(index, minlength=out.size(0))
             out.mul_(freq.unsqueeze(-1))
+
+        if ctx.needs_input_grad[1]:
+            ctx.save_for_backward(input_view, index, per_sample_weight_view)
+            ctx.weight_shape = weight.shape
+            ctx.scale_grad_by_freq = scale_grad_by_freq
+            ctx.mode = mode
+            ctx.sparse = sparse
+            ctx.minlength = out.size(0)
+
         return out
 
     @staticmethod
-    def setup_context(ctx, inputs, output):
-        pass
-
-    @staticmethod
     def backward(ctx, grad_output):
-        (input,) = ctx.saved_tensors
+        input_view, index, per_sample_weight_view = ctx.saved_tensors
+        source = grad_output[index]
+        if per_sample_weight_view is not None:
+            source.mul_(per_sample_weight_view.unsqueeze(-1))
+        if ctx.mode == "mean":
+            # we don't need minlength?
+            freq = torch.bincount(index, minlength=ctx.minlength)
+            source.div_(freq[index].unsqueeze(-1))
+
+        grad_weight = torch.index_reduce(
+            input=torch.zeros(
+                ctx.weight_shape, device=grad_output.device, dtype=grad_output.dtype
+            ),
+            dim=0,
+            index=input_view,
+            source=source,
+            reduce="mean",
+            include_self=False,
+        )
+        unique, counts = torch.unique(input_view, return_counts=True)
+        grad_weight[unique] *= counts.unsqueeze(-1)
+        return None, grad_weight, None, None, None, None, None, None, None, None, None
 
 
 def embedding_bag(
