@@ -235,7 +235,7 @@ class EmbeddingBagFunction(torch.autograd.Function):
                         else source[offsets[i] :]
                     )
                     bag_argmax = torch.argmax(bag_source, dim=0)
-                    tensor_list.append(input_view[offsets[i] + bag_argmax])
+                    tensor_list.append(offsets[i] + bag_argmax)
                 argmax_index = torch.stack(tensor_list, dim=0)
             ctx.save_for_backward(
                 input_view, index, per_sample_weight_view, argmax_index
@@ -251,13 +251,15 @@ class EmbeddingBagFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         input_view, index, per_sample_weight_view, argmax_index = ctx.saved_tensors
-        grad_weight = torch.zeros(
-            ctx.weight_shape, device=grad_output.device, dtype=grad_output.dtype
+        unique_x, unique_x_inverse, counts_x = torch.unique(
+            input_view, return_inverse=True, return_counts=True
         )
+        config = {"device": grad_output.device, "dtype": grad_output.dtype}
+        values = torch.zeros((unique_x.numel(), ctx.weight_shape[1]), **config)
         if ctx.mode == "max":
-            grad_weight.scatter_reduce_(
+            values.scatter_reduce_(
                 dim=0,
-                index=argmax_index,
+                index=unique_x_inverse[argmax_index],
                 src=grad_output,
                 reduce="sum",
                 include_self=False,
@@ -270,9 +272,9 @@ class EmbeddingBagFunction(torch.autograd.Function):
                 # we don't need minlength?
                 freq = torch.bincount(index, minlength=ctx.minlength)
                 source.div_(freq[index].unsqueeze(-1))
-            grad_weight.index_reduce_(
+            values.index_reduce_(
                 dim=0,
-                index=input_view,
+                index=unique_x_inverse,
                 source=source,
                 reduce="mean",
                 include_self=False,
@@ -287,8 +289,18 @@ class EmbeddingBagFunction(torch.autograd.Function):
             # divide a once-occurring index's grad by >1), so we intentionally follow
             # the sane F.embedding semantics here.
             if not ctx.scale_grad_by_freq:
-                unique, counts = torch.unique(input_view, return_counts=True)
-                grad_weight[unique] *= counts.unsqueeze(-1)
+                values *= counts_x.unsqueeze(-1)
+
+        if ctx.sparse:
+            grad_weight = torch.sparse_coo_tensor(
+                indices=unique_x.unsqueeze(0),
+                values=values,
+                size=ctx.weight_shape,
+                check_invariants=True,
+            )
+        else:
+            grad_weight = torch.zeros(ctx.weight_shape, **config)
+            grad_weight[unique_x] = values
 
         return None, grad_weight, None, None, None, None, None, None, None, None, None
 
