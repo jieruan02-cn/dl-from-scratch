@@ -252,8 +252,18 @@ class EmbeddingBagFunction(torch.autograd.Function):
             reduce="mean",
             include_self=False,
         )
+        # index_reduce(reduce="mean") already gives sum/count per weight row.
+        # - normal: multiply by count to recover the plain sum gradient.
+        # - scale_grad_by_freq: the desired grad is sum/freq, and freq == count,
+        #   so we just skip the multiply and leave the mean as-is.
+        # NOTE: this matches F.embedding's scale_grad_by_freq (divide each row's
+        # grad by its global frequency), NOT F.embedding_bag's. The latter's
+        # scale_grad_by_freq is quirky (a parallel-reduction artifact: it can
+        # divide a once-occurring index's grad by >1), so we intentionally follow
+        # the sane F.embedding semantics here.
         unique, counts = torch.unique(input_view, return_counts=True)
-        grad_weight[unique] *= counts.unsqueeze(-1)
+        if not ctx.scale_grad_by_freq:
+            grad_weight[unique] *= counts.unsqueeze(-1)
         return None, grad_weight, None, None, None, None, None, None, None, None, None
 
 
