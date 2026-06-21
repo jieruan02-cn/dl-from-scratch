@@ -172,7 +172,9 @@ class EmbeddingBagFunction(torch.autograd.Function):
             weight[unique_indices[mask]] *= (max_norm / norms[mask]).unsqueeze(-1)
 
         if offsets is None:
-            offsets = torch.arange(0, input.numel(), input.size(-1))
+            offsets = torch.arange(
+                0, input.numel(), input.size(-1), device=input.device
+            )
         elif include_last_offset:
             offsets = offsets[:-1]
         input_view = input.reshape(-1)
@@ -232,8 +234,16 @@ class EmbeddingBagFunction(torch.autograd.Function):
                         bag_argmax = torch.argmax(source[offsets[i] : end], dim=0)
                         tensor_list.append(offsets[i] + bag_argmax)
                         nonempty.append(i)
-                argmax_index = torch.stack(tensor_list, dim=0)
-                nonempty_bags = torch.tensor(nonempty)
+                argmax_index = (
+                    torch.stack(tensor_list, dim=0)
+                    if tensor_list
+                    else torch.empty(
+                        (0, weight.size(1)), dtype=torch.long, device=weight.device
+                    )
+                )
+                nonempty_bags = torch.tensor(
+                    nonempty, dtype=torch.long, device=weight.device
+                )
             ctx.save_for_backward(
                 input_view, index, per_sample_weight_view, argmax_index, nonempty_bags
             )
