@@ -4,6 +4,9 @@ from activation import softmax
 from dropout import dropout
 
 
+# TODO(jieruan): write the customized FlashAttention algorithm for learning and peak
+# memory gain. To get the speed gain, I need to write CUDA C++ to ensure the transient
+# matrix lives in on-chip SRAM instead of HBM.
 def scaled_dot_product_attention_core(
     query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None
 ):
