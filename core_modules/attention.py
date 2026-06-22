@@ -1,5 +1,6 @@
 import math
 import torch
+import torch.nn as nn
 from activation import softmax
 from dropout import dropout
 
@@ -58,3 +59,34 @@ def scaled_dot_product_attention(
             query, key, value, attn_mask, dropout_p, is_causal, scale
         )
     return out
+
+
+class MultiheadAttention(nn.Module):
+    def __init__(
+        self,
+        embed_dim,
+        num_heads,
+        dropout=0.0,
+        bias=True,
+        add_bias_kv=False,
+        add_zero_attn=False,
+        kdim=None,
+        vdim=None,
+        batch_first=False,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+    def forward(
+        self,
+        query,
+        key,
+        value,
+        key_padding_mask=None,
+        need_weights=True,
+        attn_mask=None,
+        average_attn_weights=True,
+        is_causal=False,
+    ):
+        pass
