@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 from activation import softmax
 from dropout import dropout
+from linear import linear
 
 
 # TODO(jieruan): write the customized FlashAttention algorithm for learning and peak
@@ -77,6 +78,38 @@ class MultiheadAttention(nn.Module):
         dtype=None,
     ):
         super().__init__()
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.add_zeron_attn = add_zero_attn
+        self.batch_first = batch_first
+
+        config = {"device": device, "dtype": dtype}
+        qkdim, vdim = (
+            embed_dim if kdim is None else kdim,
+            embed_dim if vdim is None else vdim,
+        )
+        self.weight_query = nn.Parameter(torch.empty(qkdim, embed_dim, **config))
+        self.weight_key = nn.Parameter(torch.empty(qkdim, embed_dim, **config))
+        self.weight_value = nn.Parameter(torch.empty(vdim, embed_dim, **config))
+        self.weight_out = nn.Parameter(torch.empty(embed_dim, vdim, **config))
+        if bias:
+            self.bias_query = nn.Parameter(torch.empty(qkdim, **config))
+            self.bias_key = nn.Parameter(torch.empty(qkdim, **config))
+            self.bias_value = nn.Parameter(torch.empty(vdim, **config))
+            self.bias_out = nn.Parameter(torch.empty(embed_dim, **config))
+        else:
+            self.register_parameter("bias_query", None)
+            self.register_parameter("bias_key", None)
+            self.register_parameter("bias_value", None)
+            self.register_parameter("bias_out", None)
+        if add_bias_kv:
+            self.bias_k = nn.Parameter(torch.empty(qkdim, **config))
+            self.bias_v = nn.Parameter(torch.empty(vdim, **config))
+        else:
+            self.register_parameter("bias_k", None)
+            self.register_parameter("bias_v", None)
+
+        self.reset_parameters()
 
     def forward(
         self,
@@ -89,4 +122,21 @@ class MultiheadAttention(nn.Module):
         average_attn_weights=True,
         is_causal=False,
     ):
+        if not self.batch_first:
+            query, key, value = (
+                query.transpose(0, 1),
+                key.transpose(0, 1),
+                value.transpose(0, 1),
+            )
+        if query.dim() == 2:
+            query, key, value = query.unsqueeze(0), key.unsqueeze(0), value.unsqueeze(0)
+
+        q_shape = (query.size(0), self.num_heads, query.size(1), -1)
+        kv_shape = (key.size(0), self.num_heads, key.size(1), -1)
+        query_proj = linear(query, self.weight_query, self.bias_query).view(q_shape)
+        key_proj = linear(key, self.weight_key, self.bias_key).view(kv_shape)
+        value_proj = linear(value, self.weight_value, self.bias_value).view(kv_shape)
+        out = scaled_dot_product_attention(query_proj, key_proj, value_proj)
+
+    def reset_parameters(self):
         pass
