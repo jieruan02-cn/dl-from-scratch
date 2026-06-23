@@ -78,11 +78,6 @@ class MultiheadAttention(nn.Module):
         dtype=None,
     ):
         super().__init__()
-        self.num_heads = num_heads
-        self.dropout = dropout
-        self.add_zeron_attn = add_zero_attn
-        self.batch_first = batch_first
-
         config = {"device": device, "dtype": dtype}
         qkdim, vdim = (
             embed_dim if kdim is None else kdim,
@@ -111,6 +106,12 @@ class MultiheadAttention(nn.Module):
 
         self.reset_parameters()
 
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.add_zeron_attn = add_zero_attn
+        self.batch_first = batch_first
+        self.vdim = vdim
+
     def forward(
         self,
         query,
@@ -128,15 +129,31 @@ class MultiheadAttention(nn.Module):
                 key.transpose(0, 1),
                 value.transpose(0, 1),
             )
-        if query.dim() == 2:
+        is_unbatached = query.dim() == 2
+        if is_unbatached:
             query, key, value = query.unsqueeze(0), key.unsqueeze(0), value.unsqueeze(0)
 
-        q_shape = (query.size(0), self.num_heads, query.size(1), -1)
-        kv_shape = (key.size(0), self.num_heads, key.size(1), -1)
-        query_proj = linear(query, self.weight_query, self.bias_query).view(q_shape)
-        key_proj = linear(key, self.weight_key, self.bias_key).view(kv_shape)
-        value_proj = linear(value, self.weight_value, self.bias_value).view(kv_shape)
-        out = scaled_dot_product_attention(query_proj, key_proj, value_proj)
+        query_proj = linear(query, self.weight_query, self.bias_query)
+        key_proj = linear(key, self.weight_key, self.bias_key)
+        value_proj = linear(value, self.weight_value, self.bias_value)
+
+        q_shape = query.shape[:-1] + (self.num_heads, -1)
+        kv_shape = key.shape[:-1] + (self.num_heads, -1)
+        out = scaled_dot_product_attention(
+            query_proj.view(q_shape).transpose(1, 2),
+            key_proj.view(kv_shape).transpose(1, 2),
+            value_proj.view(kv_shape).transpose(1, 2),
+            attn_mask=attn_mask,
+            dropout_p=self.dropout,
+            is_causal=is_causal,
+        )
+        out = out.transpose(1, 2).reshape(query.shape[:-1] + (self.vdim,))
+        out = linear(out, self.weight_out, self.bias_out)
+        if is_unbatached:
+            out = out.squeeze(0)
+        if not self.batch_first:
+            out = out.transpose(0, 1)
+        return out
 
     def reset_parameters(self):
         pass
