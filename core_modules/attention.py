@@ -27,12 +27,12 @@ def scaled_dot_product_attention_core(
         assert attn_mask is None
         attn_mask = torch.ones(
             query.size(-2), key.size(-2), device=query.device, dtype=torch.bool
-        ).tril_()
-        attn_mask = attn_mask.reshape((1,) * (query.dim() - 2) + attn_mask.shape)
-        attn_weights = torch.where(attn_mask, attn_weights, -torch.inf)
-    if attn_mask is not None:
+        ).triu_(diagonal=1)
+        # use masked_fill_ to save memory, where will instant
+        attn_weights.masked_fill_(attn_mask, -torch.inf)
+    elif attn_mask is not None:
         if attn_mask.dtype == torch.bool:
-            attn_weights = torch.where(attn_mask, attn_weights, -torch.inf)
+            attn_weights.masked_fill_(~attn_mask, -torch.inf)
         else:
             attn_weights.add_(attn_mask)
 
@@ -93,6 +93,11 @@ class MultiheadAttention(nn.Module):
         self.add_zero_attn = add_zero_attn
         self.batch_first = batch_first
         self.embed_dim = embed_dim
+        if embed_dim % num_heads != 0:
+            raise ValueError(
+                f"embed_dim {embed_dim} must be divisible by num_heads {num_heads}"
+            )
+        self.head_dim = embed_dim // num_heads
 
         config = {"device": device, "dtype": dtype}
         kdim, vdim = (
@@ -148,16 +153,16 @@ class MultiheadAttention(nn.Module):
 
         if is_causal:
             assert attn_mask is None
-            L, S = (
-                query.size(1) if self.batch_first else query.size(0),
-                key.size(1) if self.batch_first else key.size(0),
-            )
+            if is_unbatched or not self.batch_first:
+                L, S = query.size(0), key.size(0)
+            else:
+                L, S = query.size(1), key.size(1)
             attn_mask = torch.ones(L, S, device=query.device, dtype=torch.bool)
             attn_mask = attn_mask.triu_(diagonal=1)
         if attn_mask is not None:
             if attn_mask.dim() == 3:
                 attn_mask = attn_mask.view(
-                    (attn_mask.size(0) // self.num_heads, self.num_heads)
+                    (attn_mask.shape[0] // self.num_heads, self.num_heads)
                     + attn_mask.shape[-2:]
                 )
             if attn_mask.dtype == torch.bool:
@@ -168,6 +173,8 @@ class MultiheadAttention(nn.Module):
             if attn_mask is not None:
                 if attn_mask.dtype == torch.bool:
                     attn_mask = attn_mask & ~key_padding_mask
+                elif key_padding_mask.dtype == torch.bool:
+                    attn_mask = attn_mask.masked_fill(key_padding_mask, -torch.inf)
                 else:
                     attn_mask = attn_mask + key_padding_mask
             elif key_padding_mask.dtype == torch.bool:
@@ -202,7 +209,8 @@ class MultiheadAttention(nn.Module):
             key,
             value,
             attn_mask=attn_mask,
-            dropout_p=self.dropout,
+            # need to disable dropout when inference
+            dropout_p=self.dropout if self.training else 0.0,
             need_weights=need_weights,
         )
 
