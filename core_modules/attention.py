@@ -103,7 +103,7 @@ class MultiheadAttention(nn.Module):
         self.weight_key = nn.Parameter(torch.empty(embed_dim, kdim, **config))
         self.weight_value = nn.Parameter(torch.empty(embed_dim, vdim, **config))
         self.weight_out = nn.Parameter(torch.empty(embed_dim, embed_dim, **config))
-        if bias:
+        if self.bias:
             self.bias_query = nn.Parameter(torch.empty(embed_dim, **config))
             self.bias_key = nn.Parameter(torch.empty(embed_dim, **config))
             self.bias_value = nn.Parameter(torch.empty(embed_dim, **config))
@@ -113,9 +113,9 @@ class MultiheadAttention(nn.Module):
             self.register_parameter("bias_key", None)
             self.register_parameter("bias_value", None)
             self.register_parameter("bias_out", None)
-        if add_bias_kv:
-            self.bias_k = nn.Parameter(torch.empty(kdim, **config))
-            self.bias_v = nn.Parameter(torch.empty(vdim, **config))
+        if self.add_bias_kv:
+            self.bias_k = nn.Parameter(torch.empty(embed_dim, **config))
+            self.bias_v = nn.Parameter(torch.empty(embed_dim, **config))
         else:
             self.register_parameter("bias_k", None)
             self.register_parameter("bias_v", None)
@@ -133,6 +133,7 @@ class MultiheadAttention(nn.Module):
         average_attn_weights=True,
         is_causal=False,
     ):
+
         query = linear(query, self.weight_query, self.bias_query)
         key = linear(key, self.weight_key, self.bias_key)
         value = linear(value, self.weight_value, self.bias_value)
@@ -144,6 +145,15 @@ class MultiheadAttention(nn.Module):
             attn_out_shape = query.shape[:-1] + (self.embed_dim,)
         else:
             attn_out_shape = (query.size(1), query.size(0), self.embed_dim)
+
+        if is_causal:
+            assert attn_mask is None
+            L, S = (
+                query.size(1) if self.batch_first else query.size(0),
+                key.size(1) if self.batch_first else key.size(0),
+            )
+            attn_mask = torch.ones(L, S, device=query.device, dtype=torch.bool)
+            attn_mask = attn_mask.triu_(diagonal=1)
         if attn_mask is not None:
             if attn_mask.dim() == 3:
                 attn_mask = attn_mask.view(
@@ -159,7 +169,7 @@ class MultiheadAttention(nn.Module):
                 if attn_mask.dtype == torch.bool:
                     attn_mask = attn_mask & ~key_padding_mask
                 else:
-                    attn_mask += key_padding_mask
+                    attn_mask = attn_mask + key_padding_mask
             elif key_padding_mask.dtype == torch.bool:
                 attn_mask = ~key_padding_mask
             else:
@@ -167,6 +177,19 @@ class MultiheadAttention(nn.Module):
         query, key, value = self._normalize_shape(
             query, key, value, is_unbatched, self.batch_first
         )
+
+        if self.add_bias_kv:
+            view_shape = (1, self.num_heads, 1, -1)
+            expand_shape = (key.size(0), -1, -1, -1)
+            key = torch.cat(
+                [key, self.bias_k.view(view_shape).expand(expand_shape)], dim=2
+            )
+            value = torch.cat(
+                [value, self.bias_v.view(view_shape).expand(expand_shape)], dim=2
+            )
+            if attn_mask is not None:
+                pad_value = True if attn_mask.dtype == torch.bool else 0.0
+                attn_mask = nn.functional.pad(attn_mask, (0, 1), value=pad_value)
 
         out, attn_weights = scaled_dot_product_attention_core(
             query,
