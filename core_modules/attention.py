@@ -90,7 +90,7 @@ class MultiheadAttention(nn.Module):
         self.add_bias_kv = add_bias_kv
         self.num_heads = num_heads
         self.dropout = dropout
-        self.add_zeron_attn = add_zero_attn
+        self.add_zero_attn = add_zero_attn
         self.batch_first = batch_first
         self.embed_dim = embed_dim
 
@@ -190,6 +190,12 @@ class MultiheadAttention(nn.Module):
             if attn_mask is not None:
                 pad_value = True if attn_mask.dtype == torch.bool else 0.0
                 attn_mask = nn.functional.pad(attn_mask, (0, 1), value=pad_value)
+        if self.add_zero_attn:
+            key = nn.functional.pad(key, (0, 0, 0, 1))
+            value = nn.functional.pad(value, (0, 0, 0, 1))
+            if attn_mask is not None:
+                pad_value = True if attn_mask.dtype == torch.bool else 0.0
+                attn_mask = nn.functional.pad(attn_mask, (0, 1), value=pad_value)
 
         out, attn_weights = scaled_dot_product_attention_core(
             query,
@@ -197,7 +203,6 @@ class MultiheadAttention(nn.Module):
             value,
             attn_mask=attn_mask,
             dropout_p=self.dropout,
-            is_causal=is_causal,
             need_weights=need_weights,
         )
 
