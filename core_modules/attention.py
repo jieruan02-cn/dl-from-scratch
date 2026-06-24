@@ -86,19 +86,27 @@ class MultiheadAttention(nn.Module):
         dtype=None,
     ):
         super().__init__()
+        self.bias = bias
+        self.add_bias_kv = add_bias_kv
+        self.num_heads = num_heads
+        self.dropout = dropout
+        self.add_zeron_attn = add_zero_attn
+        self.batch_first = batch_first
+        self.embed_dim = embed_dim
+
         config = {"device": device, "dtype": dtype}
-        qkdim, vdim = (
+        kdim, vdim = (
             embed_dim if kdim is None else kdim,
             embed_dim if vdim is None else vdim,
         )
-        self.weight_query = nn.Parameter(torch.empty(qkdim, embed_dim, **config))
-        self.weight_key = nn.Parameter(torch.empty(qkdim, embed_dim, **config))
-        self.weight_value = nn.Parameter(torch.empty(vdim, embed_dim, **config))
-        self.weight_out = nn.Parameter(torch.empty(embed_dim, vdim, **config))
+        self.weight_query = nn.Parameter(torch.empty(embed_dim, embed_dim, **config))
+        self.weight_key = nn.Parameter(torch.empty(embed_dim, kdim, **config))
+        self.weight_value = nn.Parameter(torch.empty(embed_dim, vdim, **config))
+        self.weight_out = nn.Parameter(torch.empty(embed_dim, embed_dim, **config))
         if bias:
-            self.bias_query = nn.Parameter(torch.empty(qkdim, **config))
-            self.bias_key = nn.Parameter(torch.empty(qkdim, **config))
-            self.bias_value = nn.Parameter(torch.empty(vdim, **config))
+            self.bias_query = nn.Parameter(torch.empty(embed_dim, **config))
+            self.bias_key = nn.Parameter(torch.empty(embed_dim, **config))
+            self.bias_value = nn.Parameter(torch.empty(embed_dim, **config))
             self.bias_out = nn.Parameter(torch.empty(embed_dim, **config))
         else:
             self.register_parameter("bias_query", None)
@@ -106,19 +114,13 @@ class MultiheadAttention(nn.Module):
             self.register_parameter("bias_value", None)
             self.register_parameter("bias_out", None)
         if add_bias_kv:
-            self.bias_k = nn.Parameter(torch.empty(qkdim, **config))
+            self.bias_k = nn.Parameter(torch.empty(kdim, **config))
             self.bias_v = nn.Parameter(torch.empty(vdim, **config))
         else:
             self.register_parameter("bias_k", None)
             self.register_parameter("bias_v", None)
 
         self.reset_parameters()
-
-        self.num_heads = num_heads
-        self.dropout = dropout
-        self.add_zeron_attn = add_zero_attn
-        self.batch_first = batch_first
-        self.vdim = vdim
 
     def forward(
         self,
@@ -137,11 +139,11 @@ class MultiheadAttention(nn.Module):
 
         is_unbatched = query.dim() == 2
         if is_unbatched:
-            attn_out_shape = (1, query.size(0), self.vdim)
+            attn_out_shape = (1, query.size(0), self.embed_dim)
         elif self.batch_first:
-            attn_out_shape = query.shape[:-1] + (self.vdim,)
+            attn_out_shape = query.shape[:-1] + (self.embed_dim,)
         else:
-            attn_out_shape = (query.size(1), query.size(0), self.vdim)
+            attn_out_shape = (query.size(1), query.size(0), self.embed_dim)
         if attn_mask is not None:
             if attn_mask.dim() == 3:
                 attn_mask = attn_mask.view(
@@ -189,7 +191,18 @@ class MultiheadAttention(nn.Module):
         return out, attn_weights
 
     def reset_parameters(self):
-        pass
+        nn.init.xavier_uniform_(self.weight_query)
+        nn.init.xavier_uniform_(self.weight_key)
+        nn.init.xavier_uniform_(self.weight_value)
+        nn.init.xavier_uniform_(self.weight_out)
+        if self.bias:
+            nn.init.zeros_(self.bias_query)
+            nn.init.zeros_(self.bias_key)
+            nn.init.zeros_(self.bias_value)
+            nn.init.zeros_(self.bias_out)
+        if self.add_bias_kv:
+            nn.init.zeros_(self.bias_k)
+            nn.init.zeros_(self.bias_v)
 
     def _normalize_shape(self, query, key, value, is_unbatched, batch_first):
         if is_unbatched:
