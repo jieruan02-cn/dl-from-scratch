@@ -10,28 +10,36 @@ from linear import linear
 # memory gain. To get the speed gain, I need to write CUDA C++ to ensure the transient
 # matrix lives in on-chip SRAM instead of HBM.
 def scaled_dot_product_attention_core(
-    query, key, value, attn_mask=None, dropout_p=0.0, is_causal=False, scale=None
+    query,
+    key,
+    value,
+    attn_mask=None,
+    dropout_p=0.0,
+    is_causal=False,
+    scale=None,
+    need_weights=False,
 ):
     if scale is None:
         scale = 1.0 / math.sqrt(query.size(-1))
-    attn_score = (query @ key.mT).mul_(scale)
+    attn_weights = (query @ key.mT).mul_(scale)
 
-    if attn_mask is None:
-        if is_causal:
-            attn_mask = torch.ones(
-                query.size(-2), key.size(-2), device=query.device, dtype=torch.bool
-            ).tril_()
-            attn_mask = attn_mask.reshape((1,) * (query.dim() - 2) + attn_mask.shape)
-            attn_score = torch.where(attn_mask, attn_score, -torch.inf)
-    elif attn_mask.dtype == torch.bool:
-        attn_score = torch.where(attn_mask, attn_score, -torch.inf)
-    else:
-        attn_score.add_(attn_mask)
+    if is_causal:
+        assert attn_mask is None
+        attn_mask = torch.ones(
+            query.size(-2), key.size(-2), device=query.device, dtype=torch.bool
+        ).tril_()
+        attn_mask = attn_mask.reshape((1,) * (query.dim() - 2) + attn_mask.shape)
+        attn_weights = torch.where(attn_mask, attn_weights, -torch.inf)
+    if attn_mask is not None:
+        if attn_mask.dtype == torch.bool:
+            attn_weights = torch.where(attn_mask, attn_weights, -torch.inf)
+        else:
+            attn_weights.add_(attn_mask)
 
-    attn_score = softmax(attn_score, dim=-1)
+    attn_weights = softmax(attn_weights, dim=-1)
     if dropout_p != 0.0:
-        attn_score = dropout(attn_score, p=dropout_p)
-    return attn_score @ value
+        attn_weights = dropout(attn_weights, p=dropout_p)
+    return attn_weights @ value, attn_weights if need_weights else None
 
 
 def scaled_dot_product_attention(
@@ -51,12 +59,12 @@ def scaled_dot_product_attention(
             key.unsqueeze(-3),
             value.unsqueeze(-3),
         )
-        out = scaled_dot_product_attention_core(
+        out, _ = scaled_dot_product_attention_core(
             query_view, key_view, value_view, attn_mask, dropout_p, is_causal, scale
         )
         out = out.view(query.shape[:-1] + (value.shape[-1],))
     else:
-        out = scaled_dot_product_attention_core(
+        out, _ = scaled_dot_product_attention_core(
             query, key, value, attn_mask, dropout_p, is_causal, scale
         )
     return out
@@ -123,37 +131,85 @@ class MultiheadAttention(nn.Module):
         average_attn_weights=True,
         is_causal=False,
     ):
-        if not self.batch_first:
+        query = linear(query, self.weight_query, self.bias_query)
+        key = linear(key, self.weight_key, self.bias_key)
+        value = linear(value, self.weight_value, self.bias_value)
+
+        is_unbatched = query.dim() == 2
+        if is_unbatched:
+            attn_out_shape = (1, query.size(0), self.vdim)
+        elif self.batch_first:
+            attn_out_shape = query.shape[:-1] + (self.vdim,)
+        else:
+            attn_out_shape = (query.size(1), query.size(0), self.vdim)
+        if attn_mask is not None:
+            if attn_mask.dim() == 3:
+                attn_mask = attn_mask.view(
+                    (attn_mask.size(0) // self.num_heads, self.num_heads)
+                    + attn_mask.shape[-2:]
+                )
+            if attn_mask.dtype == torch.bool:
+                attn_mask = ~attn_mask
+        if key_padding_mask is not None:
+            if key_padding_mask.dim() > 1:
+                key_padding_mask = key_padding_mask[:, None, None, :]
+            if attn_mask is not None:
+                if attn_mask.dtype == torch.bool:
+                    attn_mask = attn_mask & ~key_padding_mask
+                else:
+                    attn_mask += key_padding_mask
+            elif key_padding_mask.dtype == torch.bool:
+                attn_mask = ~key_padding_mask
+            else:
+                attn_mask = key_padding_mask
+        query, key, value = self._normalize_shape(
+            query, key, value, is_unbatched, self.batch_first
+        )
+
+        out, attn_weights = scaled_dot_product_attention_core(
+            query,
+            key,
+            value,
+            attn_mask=attn_mask,
+            dropout_p=self.dropout,
+            is_causal=is_causal,
+            need_weights=need_weights,
+        )
+
+        out = self._unnormalize_shape(
+            out, is_unbatched, self.batch_first, attn_out_shape
+        )
+        out = linear(out, self.weight_out, self.bias_out)
+        if attn_weights is not None:
+            if average_attn_weights:
+                attn_weights = attn_weights.mean(dim=1)
+            if is_unbatched:
+                attn_weights = attn_weights.squeeze(0)
+
+        return out, attn_weights
+
+    def reset_parameters(self):
+        pass
+
+    def _normalize_shape(self, query, key, value, is_unbatched, batch_first):
+        if is_unbatched:
+            query, key, value = query.unsqueeze(0), key.unsqueeze(0), value.unsqueeze(0)
+        elif not batch_first:
             query, key, value = (
                 query.transpose(0, 1),
                 key.transpose(0, 1),
                 value.transpose(0, 1),
             )
-        is_unbatached = query.dim() == 2
-        if is_unbatached:
-            query, key, value = query.unsqueeze(0), key.unsqueeze(0), value.unsqueeze(0)
-
-        query_proj = linear(query, self.weight_query, self.bias_query)
-        key_proj = linear(key, self.weight_key, self.bias_key)
-        value_proj = linear(value, self.weight_value, self.bias_value)
-
-        q_shape = query.shape[:-1] + (self.num_heads, -1)
         kv_shape = key.shape[:-1] + (self.num_heads, -1)
-        out = scaled_dot_product_attention(
-            query_proj.view(q_shape).transpose(1, 2),
-            key_proj.view(kv_shape).transpose(1, 2),
-            value_proj.view(kv_shape).transpose(1, 2),
-            attn_mask=attn_mask,
-            dropout_p=self.dropout,
-            is_causal=is_causal,
-        )
-        out = out.transpose(1, 2).reshape(query.shape[:-1] + (self.vdim,))
-        out = linear(out, self.weight_out, self.bias_out)
-        if is_unbatached:
+        query = query.view(query.shape[:-1] + (self.num_heads, -1)).transpose(1, 2)
+        key = key.view(kv_shape).transpose(1, 2)
+        value = value.view(kv_shape).transpose(1, 2)
+        return query, key, value
+
+    def _unnormalize_shape(self, out, is_unbatched, batch_first, attn_out_shape):
+        out = out.transpose(1, 2).reshape(attn_out_shape)
+        if is_unbatched:
             out = out.squeeze(0)
-        if not self.batch_first:
+        elif not batch_first:
             out = out.transpose(0, 1)
         return out
-
-    def reset_parameters(self):
-        pass
