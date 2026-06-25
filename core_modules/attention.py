@@ -19,23 +19,21 @@ def scaled_dot_product_attention_core(
     scale=None,
     need_weights=False,
 ):
-    if scale is None:
-        scale = 1.0 / math.sqrt(query.size(-1))
-    attn_weights = (query @ key.mT).mul_(scale)
-
+    config = {"device": query.device, "dtype": query.dtype}
     if is_causal:
         assert attn_mask is None
-        attn_mask = torch.ones(
-            query.size(-2), key.size(-2), device=query.device, dtype=torch.bool
+        attn_mask = torch.full(
+            (query.size(-2), key.size(-2)), -torch.inf, **config
         ).triu_(diagonal=1)
-        # use masked_fill_ to save memory, where will instant
-        attn_weights.masked_fill_(attn_mask, -torch.inf)
-    elif attn_mask is not None:
-        if attn_mask.dtype == torch.bool:
-            attn_weights.masked_fill_(~attn_mask, -torch.inf)
-        else:
-            attn_weights.add_(attn_mask)
+    elif attn_mask is not None and attn_mask.dtype == torch.bool:
+        attn_mask = torch.zeros_like(attn_mask, **config).masked_fill_(
+            ~attn_mask, -torch.inf
+        )
 
+    attn_weights = query @ key.mT
+    attn_weights.mul_(1.0 / math.sqrt(query.size(-1)) if scale is None else scale)
+    if attn_mask is not None:
+        attn_weights.add_(attn_mask)
     attn_weights = softmax(attn_weights, dim=-1)
     if dropout_p != 0.0:
         attn_weights = dropout(attn_weights, p=dropout_p)
