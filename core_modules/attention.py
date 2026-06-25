@@ -1,7 +1,7 @@
 import math
 import torch
 import torch.nn as nn
-from activation import softmax
+from activation import softmax, relu
 from dropout import dropout
 from linear import linear
 
@@ -259,3 +259,68 @@ class MultiheadAttention(nn.Module):
         elif not batch_first:
             out = out.transpose(0, 1)
         return out
+
+
+class TransformerEncoderLayer(nn.Module):
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation=relu,
+        layer_norm_eps=1e-05,
+        batch_first=False,
+        norm_first=False,
+        bias=True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+    def forward(self):
+        pass
+
+
+class TransformerDecoderLayer(nn.Module):
+    def __init__(
+        self,
+        d_model,
+        nhead,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation=relu,
+        layer_norm_eps=1e-05,
+        batch_first=False,
+        norm_first=False,
+        bias=True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+
+    def forward(self):
+        pass
+
+
+class TransformerEncoder(nn.Module):
+    def __init__(
+        self,
+        encoder_layer,
+        num_layer,
+        norm=None,
+        enable_nested_tensor=True,
+        mask_check=True,
+    ):
+        super().__init__()
+
+    def forward(self):
+        pass
+
+
+class TransformerDecoder(nn.Module):
+    def __init__(self, decoder_layer, num_layers, norm=None):
+        super().__init__()
+
+    def forward(self):
+        pass
