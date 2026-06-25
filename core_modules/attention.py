@@ -6,6 +6,18 @@ from dropout import dropout
 from linear import linear
 
 
+def _canonical_mask(mask, device=None, dtype=None):
+    if mask.dtype == torch.bool:
+        mask = torch.zeros_like(
+            mask, device=device, dtype=torch.float32 if dtype is None else dtype
+        ).masked_fill_(mask, -torch.inf)
+    return mask
+
+
+def _causal_mask(shape, device=None, dtype=None):
+    return torch.full(shape, -torch.inf, device=device, dtype=dtype).triu_(diagonal=1)
+
+
 # TODO(jieruan): write the customized FlashAttention algorithm for learning and peak
 # memory gain. To get the speed gain, I need to write CUDA C++ to ensure the transient
 # matrix lives in on-chip SRAM instead of HBM.
@@ -22,13 +34,9 @@ def scaled_dot_product_attention_core(
     config = {"device": query.device, "dtype": query.dtype}
     if is_causal:
         assert attn_mask is None
-        attn_mask = torch.full(
-            (query.size(-2), key.size(-2)), -torch.inf, **config
-        ).triu_(diagonal=1)
+        attn_mask = _causal_mask((query.size(-2), key.size(-2)), **config)
     elif attn_mask is not None and attn_mask.dtype == torch.bool:
-        attn_mask = torch.zeros_like(attn_mask, **config).masked_fill_(
-            ~attn_mask, -torch.inf
-        )
+        attn_mask = _canonical_mask(~attn_mask, **config)
 
     attn_weights = query @ key.mT
     attn_weights.mul_(1.0 / math.sqrt(query.size(-1)) if scale is None else scale)
@@ -149,36 +157,29 @@ class MultiheadAttention(nn.Module):
         else:
             attn_out_shape = (query.size(1), query.size(0), self.embed_dim)
 
+        config = {"device": query.device, "dtype": query.dtype}
         if is_causal:
             assert attn_mask is None
-            if is_unbatched or not self.batch_first:
-                L, S = query.size(0), key.size(0)
-            else:
-                L, S = query.size(1), key.size(1)
-            attn_mask = torch.ones(L, S, device=query.device, dtype=torch.bool)
-            attn_mask = attn_mask.triu_(diagonal=1)
-        if attn_mask is not None:
+            attn_mask = _causal_mask(
+                (query.size(0), key.size(0))
+                if is_unbatched or not self.batch_first
+                else (query.size(1), key.size(1)),
+                **config,
+            )
+        elif attn_mask is not None:
+            attn_mask = _canonical_mask(attn_mask, **config)
             if attn_mask.dim() == 3:
                 attn_mask = attn_mask.view(
                     (attn_mask.shape[0] // self.num_heads, self.num_heads)
                     + attn_mask.shape[-2:]
                 )
-            if attn_mask.dtype == torch.bool:
-                attn_mask = ~attn_mask
         if key_padding_mask is not None:
+            key_padding_mask = _canonical_mask(key_padding_mask, **config)
             if key_padding_mask.dim() > 1:
                 key_padding_mask = key_padding_mask[:, None, None, :]
-            if attn_mask is not None:
-                if attn_mask.dtype == torch.bool:
-                    attn_mask = attn_mask & ~key_padding_mask
-                elif key_padding_mask.dtype == torch.bool:
-                    attn_mask = attn_mask.masked_fill(key_padding_mask, -torch.inf)
-                else:
-                    attn_mask = attn_mask + key_padding_mask
-            elif key_padding_mask.dtype == torch.bool:
-                attn_mask = ~key_padding_mask
-            else:
-                attn_mask = key_padding_mask
+            attn_mask = (
+                key_padding_mask if attn_mask is None else attn_mask + key_padding_mask
+            )
         query, key, value = self._normalize_shape(
             query, key, value, is_unbatched, self.batch_first
         )
@@ -193,14 +194,12 @@ class MultiheadAttention(nn.Module):
                 [value, self.bias_v.view(view_shape).expand(expand_shape)], dim=2
             )
             if attn_mask is not None:
-                pad_value = True if attn_mask.dtype == torch.bool else 0.0
-                attn_mask = nn.functional.pad(attn_mask, (0, 1), value=pad_value)
+                attn_mask = nn.functional.pad(attn_mask, (0, 1))
         if self.add_zero_attn:
             key = nn.functional.pad(key, (0, 0, 0, 1))
             value = nn.functional.pad(value, (0, 0, 0, 1))
             if attn_mask is not None:
-                pad_value = True if attn_mask.dtype == torch.bool else 0.0
-                attn_mask = nn.functional.pad(attn_mask, (0, 1), value=pad_value)
+                attn_mask = nn.functional.pad(attn_mask, (0, 1))
 
         out, attn_weights = scaled_dot_product_attention_core(
             query,
