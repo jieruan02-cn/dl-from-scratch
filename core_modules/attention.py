@@ -289,7 +289,7 @@ class TransformerEncoderLayer(nn.Module):
         super().__init__()
         config = {"device": device, "dtype": dtype}
         self.multi_head_attn = MultiheadAttention(
-            d_model, nhead, dropout, batch_first=batch_first, **config
+            d_model, nhead, dropout, bias, batch_first=batch_first, **config
         )
         self.dropout = Dropout(p=dropout)
         self.layer_norm1 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
@@ -350,7 +350,17 @@ class TransformerDecoderLayer(nn.Module):
     ):
         super().__init__()
 
-    def forward(self):
+    def forward(
+        self,
+        tgt,
+        memory,
+        tgt_mask=None,
+        memory_mask=None,
+        tgt_key_padding_mask=None,
+        memory_key_padding_mask=None,
+        tgt_is_causal=False,
+        memory_is_causal=False,
+    ):
         pass
 
 
