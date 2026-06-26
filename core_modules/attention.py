@@ -2,8 +2,9 @@ import math
 import torch
 import torch.nn as nn
 from activation import softmax, relu
-from dropout import dropout
-from linear import linear
+from dropout import dropout, Dropout
+from linear import linear, Linear
+from normalization import LayerNorm
 
 
 def _canonical_mask(mask, device=None, dtype=None):
@@ -261,6 +262,15 @@ class MultiheadAttention(nn.Module):
         return out
 
 
+class Lambda(nn.Module):
+    def __init__(self, func):
+        super().__init__()
+        self.func = func
+
+    def forward(self, *args, **kwargs):
+        return self.func(*args, **kwargs)
+
+
 class TransformerEncoderLayer(nn.Module):
     def __init__(
         self,
@@ -277,9 +287,49 @@ class TransformerEncoderLayer(nn.Module):
         dtype=None,
     ):
         super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.multi_head_attn = MultiheadAttention(
+            d_model, nhead, dropout, batch_first=batch_first, **config
+        )
+        self.layer_norm1 = LayerNorm(d_model, layer_norm_eps)
+        self.ffn = nn.Sequential(
+            Linear(d_model, dim_feedforward, bias, **config),
+            Lambda(activation),
+            Dropout(p=dropout),
+            Linear(dim_feedforward, d_model, bias, **config),
+            Dropout(p=dropout),
+        )
+        self.layer_norm2 = LayerNorm(d_model, layer_norm_eps)
+        self.norm_first = norm_first
 
-    def forward(self):
-        pass
+    def forward(self, src, src_mask=None, src_key_padding_mask=None, is_causal=False):
+        if self.norm_first:
+            mha_input = self.layer_norm1(src)
+            mha_out, _ = self.multi_head_attn(
+                query=mha_input,
+                key=mha_input,
+                value=mha_input,
+                key_padding_mask=src_key_padding_mask,
+                need_weights=False,
+                attn_mask=src_mask,
+                is_causal=is_causal,
+            )
+            out = src + mha_out
+            out = out + self.ffn(self.layer_norm2(out))
+        else:
+            out, _ = self.multi_head_attn(
+                query=src,
+                key=src,
+                value=src,
+                key_padding_mask=src_key_padding_mask,
+                need_weights=False,
+                attn_mask=src_mask,
+                is_causal=is_causal,
+            )
+            out = self.layer_norm1(src + out)
+            out = self.layer_norm2(out + self.ffn(out))
+
+        return out
 
 
 class TransformerDecoderLayer(nn.Module):

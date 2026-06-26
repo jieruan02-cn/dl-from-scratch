@@ -17,8 +17,9 @@ class DropoutFunction(torch.autograd.Function):
         if p < 0.0 or p >= 1.0:
             raise ValueError(f"dropout probability has to be in [0, 1.0), got {p}")
 
+        out = input
         mask = None
-        if training:
+        if training and p > 0.0:
             out = input if inplace else input.clone()
             # Use boolean mask to save memory. Using rng state saves more but computing
             # random number for large tensor is computationally expensive and unclear
@@ -26,8 +27,6 @@ class DropoutFunction(torch.autograd.Function):
             mask_shape = get_dropout_mask_shape(input, dim)
             mask = torch.rand(mask_shape, device=input.device) > p
             out.mul_(mask).div_(1 - p)
-        else:
-            out = input
 
         if inplace:
             ctx.mark_dirty(input)
@@ -41,7 +40,7 @@ class DropoutFunction(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         (mask,) = ctx.saved_tensors
-        if ctx.training:
+        if ctx.training and ctx.p > 0.0:
             grad_input = grad_output * mask
             grad_input.div_(1 - ctx.p)
         else:
