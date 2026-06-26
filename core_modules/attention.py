@@ -291,7 +291,8 @@ class TransformerEncoderLayer(nn.Module):
         self.multi_head_attn = MultiheadAttention(
             d_model, nhead, dropout, batch_first=batch_first, **config
         )
-        self.layer_norm1 = LayerNorm(d_model, layer_norm_eps)
+        self.dropout = Dropout(p=dropout)
+        self.layer_norm1 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
         self.ffn = nn.Sequential(
             Linear(d_model, dim_feedforward, bias, **config),
             Lambda(activation),
@@ -299,7 +300,7 @@ class TransformerEncoderLayer(nn.Module):
             Linear(dim_feedforward, d_model, bias, **config),
             Dropout(p=dropout),
         )
-        self.layer_norm2 = LayerNorm(d_model, layer_norm_eps)
+        self.layer_norm2 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
         self.norm_first = norm_first
 
     def forward(self, src, src_mask=None, src_key_padding_mask=None, is_causal=False):
@@ -314,7 +315,7 @@ class TransformerEncoderLayer(nn.Module):
                 attn_mask=src_mask,
                 is_causal=is_causal,
             )
-            out = src + mha_out
+            out = src + self.dropout(mha_out)
             out = out + self.ffn(self.layer_norm2(out))
         else:
             out, _ = self.multi_head_attn(
@@ -326,7 +327,7 @@ class TransformerEncoderLayer(nn.Module):
                 attn_mask=src_mask,
                 is_causal=is_causal,
             )
-            out = self.layer_norm1(src + out)
+            out = self.layer_norm1(src + self.dropout(out))
             out = self.layer_norm2(out + self.ffn(out))
 
         return out
