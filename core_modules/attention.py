@@ -349,6 +349,28 @@ class TransformerDecoderLayer(nn.Module):
         dtype=None,
     ):
         super().__init__()
+        config = {"device": device, "dtype": dtype}
+        self.multi_head_attn = MultiheadAttention(
+            d_model, nhead, dropout, bias, batch_first=batch_first, **config
+        )
+        self.dropout1 = Dropout(p=dropout)
+        self.layer_norm1 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
+
+        self.multi_head_cross_attn = MultiheadAttention(
+            d_model, nhead, dropout, bias, batch_first=batch_first, **config
+        )
+        self.dropout2 = Dropout(p=dropout)
+        self.layer_norm2 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
+
+        self.ffn = nn.Sequential(
+            Linear(d_model, dim_feedforward, bias, **config),
+            Lambda(activation),
+            Dropout(p=dropout),
+            Linear(dim_feedforward, d_model, bias, **config),
+            Dropout(p=dropout),
+        )
+        self.layer_norm3 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
+        self.norm_first = norm_first
 
     def forward(
         self,
