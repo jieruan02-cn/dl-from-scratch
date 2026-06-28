@@ -353,14 +353,14 @@ class TransformerDecoderLayer(nn.Module):
         self.multi_head_attn = MultiheadAttention(
             d_model, nhead, dropout, bias, batch_first=batch_first, **config
         )
-        self.dropout1 = Dropout(p=dropout)
         self.layer_norm1 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
+        self.dropout1 = Dropout(p=dropout)
 
         self.multi_head_cross_attn = MultiheadAttention(
             d_model, nhead, dropout, bias, batch_first=batch_first, **config
         )
-        self.dropout2 = Dropout(p=dropout)
         self.layer_norm2 = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
+        self.dropout2 = Dropout(p=dropout)
 
         self.ffn = nn.Sequential(
             Linear(d_model, dim_feedforward, bias, **config),
@@ -383,7 +383,59 @@ class TransformerDecoderLayer(nn.Module):
         tgt_is_causal=False,
         memory_is_causal=False,
     ):
-        pass
+        if self.norm_first:
+            mha_input = self.layer_norm1(tgt)
+            mha_output, _ = self.multi_head_attn(
+                query=mha_input,
+                key=mha_input,
+                value=mha_input,
+                key_padding_mask=tgt_key_padding_mask,
+                need_weights=False,
+                attn_mask=tgt_mask,
+                average_attn_weights=False,
+                is_causal=tgt_is_causal,
+            )
+            out = tgt + self.dropout1(mha_output)
+
+            cross_attn_output, _ = self.multi_head_cross_attn(
+                query=self.layer_norm2(out),
+                key=memory,
+                value=memory,
+                key_padding_mask=memory_key_padding_mask,
+                need_weights=False,
+                attn_mask=memory_mask,
+                average_attn_weights=False,
+                is_causal=memory_is_causal,
+            )
+            out = out + self.dropout2(cross_attn_output)
+            out = out + self.ffn(self.layer_norm3(out))
+        else:
+            out, _ = self.multi_head_attn(
+                query=tgt,
+                key=tgt,
+                value=tgt,
+                key_padding_mask=tgt_key_padding_mask,
+                need_weights=False,
+                attn_mask=tgt_mask,
+                average_attn_weights=False,
+                is_causal=tgt_is_causal,
+            )
+            out = self.layer_norm1(tgt + self.dropout1(out))
+
+            cross_attn_output, _ = self.multi_head_cross_attn(
+                query=out,
+                key=memory,
+                value=memory,
+                key_padding_mask=memory_key_padding_mask,
+                need_weights=False,
+                attn_mask=memory_mask,
+                average_attn_weights=False,
+                is_causal=memory_is_causal,
+            )
+            out = self.layer_norm2(out + self.dropout2(cross_attn_output))
+            out = self.layer_norm3(out + self.ffn(out))
+
+        return out
 
 
 class TransformerEncoder(nn.Module):
