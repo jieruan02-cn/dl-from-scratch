@@ -454,11 +454,20 @@ class TransformerEncoder(nn.Module):
         self.layers = nn.ModuleList(
             [copy.deepcopy(encoder_layer) for _ in range(num_layers)]
         )
+        # # call reset for all layers to give different initialization.
+        # for layer in self.layers:
+        #     layer.reset_parameters()
         self.norm = norm
         self.enable_nested_tensor = enable_nested_tensor
         self.mask_check = mask_check
 
     def forward(self, src, mask=None, src_key_padding_mask=None, is_causal=None):
+        config = {"device": src.device, "dtype": src.dtype}
+        if mask is not None:
+            mask = _canonical_mask(mask, **config)
+        if src_key_padding_mask is not None:
+            src_key_padding_mask = _canonical_mask(src_key_padding_mask, **config)
+
         out = src
         for layer in self.layers:
             out = layer(
@@ -475,7 +484,12 @@ class TransformerEncoder(nn.Module):
 class TransformerDecoder(nn.Module):
     def __init__(self, decoder_layer, num_layers, norm=None):
         super().__init__()
-        self.layers = nn.ModuleList([decoder_layer() for _ in range(num_layers)])
+        self.layers = nn.ModuleList(
+            [copy.deepcopy(decoder_layer) for _ in range(num_layers)]
+        )
+        # # call reset for all layers to give different initialization.
+        # for layer in self.layers:
+        #     layer.reset_parameters()
         self.norm = norm
 
     def forward(
@@ -487,6 +501,30 @@ class TransformerDecoder(nn.Module):
         tgt_key_padding_mask=None,
         memory_key_padding_mask=None,
         tgt_is_causal=None,
-        memory_is_causal=None,
+        memory_is_causal=False,
     ):
-        pass
+        config = {"device": tgt.device, "dtype": tgt.dtype}
+        if tgt_mask is not None:
+            tgt_mask = _canonical_mask(tgt_mask, **config)
+        if memory_mask is not None:
+            memory_mask = _canonical_mask(memory_mask, **config)
+        if tgt_key_padding_mask is not None:
+            tgt_key_padding_mask = _canonical_mask(tgt_key_padding_mask, **config)
+        if memory_key_padding_mask is not None:
+            memory_key_padding_mask = _canonical_mask(memory_key_padding_mask, **config)
+
+        out = tgt
+        for layer in self.layers:
+            out = layer(
+                out,
+                memory,
+                tgt_mask,
+                memory_mask,
+                tgt_key_padding_mask,
+                memory_key_padding_mask,
+                tgt_is_causal,
+                memory_is_causal,
+            )
+        if self.norm is not None:
+            out = self.norm(out)
+        return out
