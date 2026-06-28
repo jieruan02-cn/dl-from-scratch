@@ -528,3 +528,91 @@ class TransformerDecoder(nn.Module):
         if self.norm is not None:
             out = self.norm(out)
         return out
+
+
+class Transformer(nn.Module):
+    def __init__(
+        self,
+        d_model=512,
+        nhead=8,
+        num_encoder_layers=6,
+        num_decoder_layers=6,
+        dim_feedforward=2048,
+        dropout=0.1,
+        activation=relu,
+        custom_encoder=None,
+        custom_decoder=None,
+        layer_norm_eps=1e-05,
+        batch_first=False,
+        norm_first=False,
+        bias=True,
+        device=None,
+        dtype=None,
+    ):
+        super().__init__()
+        config = {"device": device, "dtype": dtype}
+        if custom_encoder is None:
+            encoder_layer = TransformerEncoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                activation=activation,
+                layer_norm_eps=layer_norm_eps,
+                batch_first=batch_first,
+                norm_first=norm_first,
+                bias=bias,
+                **config,
+            )
+            encoder_norm = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
+            self.encoder = TransformerEncoder(
+                encoder_layer, num_encoder_layers, norm=encoder_norm
+            )
+        else:
+            self.encoder = custom_encoder
+        if custom_decoder is None:
+            decoder_layer = TransformerDecoderLayer(
+                d_model=d_model,
+                nhead=nhead,
+                dim_feedforward=dim_feedforward,
+                dropout=dropout,
+                activation=activation,
+                layer_norm_eps=layer_norm_eps,
+                batch_first=batch_first,
+                norm_first=norm_first,
+                bias=bias,
+                **config,
+            )
+            decoder_norm = LayerNorm(d_model, layer_norm_eps, bias=bias, **config)
+            self.decoder = TransformerDecoder(
+                decoder_layer, num_decoder_layers, norm=decoder_norm
+            )
+        else:
+            self.decoder = custom_decoder
+
+    def forward(
+        self,
+        src,
+        tgt,
+        src_mask=None,
+        tgt_mask=None,
+        memory_mask=None,
+        src_key_padding_mask=None,
+        tgt_key_padding_mask=None,
+        memory_key_padding_mask=None,
+        src_is_causal=None,
+        tgt_is_causal=None,
+        memory_is_causal=False,
+    ):
+        memory = self.encoder(src, src_mask, src_key_padding_mask, src_is_causal)
+        out = self.decoder(
+            tgt,
+            memory,
+            tgt_mask,
+            memory_mask,
+            tgt_key_padding_mask,
+            memory_key_padding_mask,
+            tgt_is_causal,
+            memory_is_causal,
+        )
+        return out
