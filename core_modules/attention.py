@@ -1,3 +1,4 @@
+import copy
 import math
 import torch
 import torch.nn as nn
@@ -442,20 +443,48 @@ class TransformerEncoder(nn.Module):
     def __init__(
         self,
         encoder_layer,
-        num_layer,
+        num_layers,
         norm=None,
         enable_nested_tensor=True,
         mask_check=True,
     ):
         super().__init__()
+        self.layers = nn.ModuleList(
+            [copy.deepcopy(encoder_layer) for _ in range(num_layers)]
+        )
+        self.norm = norm
+        self.enable_nested_tensor = enable_nested_tensor
+        self.mask_check = mask_check
 
-    def forward(self):
-        pass
+    def forward(self, src, mask=None, src_key_padding_mask=None, is_causal=None):
+        out = src
+        for layer in self.layers:
+            out = layer(
+                out,
+                src_mask=mask,
+                src_key_padding_mask=src_key_padding_mask,
+                is_causal=is_causal,
+            )
+        if self.norm is not None:
+            out = self.norm(out)
+        return out
 
 
 class TransformerDecoder(nn.Module):
     def __init__(self, decoder_layer, num_layers, norm=None):
         super().__init__()
+        self.layers = nn.ModuleList([decoder_layer() for _ in range(num_layers)])
+        self.norm = norm
 
-    def forward(self):
+    def forward(
+        self,
+        tgt,
+        memory,
+        tgt_mask=None,
+        memory_mask=None,
+        tgt_key_padding_mask=None,
+        memory_key_padding_mask=None,
+        tgt_is_causal=None,
+        memory_is_causal=None,
+    ):
         pass
