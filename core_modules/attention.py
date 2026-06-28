@@ -449,6 +449,8 @@ class TransformerEncoder(nn.Module):
         mask_check=True,
     ):
         super().__init__()
+        # this will make each layer's initial weights the same, factory version might be
+        # practically better.
         self.layers = nn.ModuleList(
             [copy.deepcopy(encoder_layer) for _ in range(num_layers)]
         )
