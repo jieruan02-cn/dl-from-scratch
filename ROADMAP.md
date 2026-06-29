@@ -1,6 +1,6 @@
 # Roadmap & Project Strategy
 
-This document captures the direction for `ml-from-scratch` and the broader
+This document captures the direction for `dl-from-scratch` and the broader
 paper-reproduction / portfolio strategy it feeds into. It records *decisions and
 rationale*, not implementation detail.
 
@@ -8,7 +8,7 @@ rationale*, not implementation detail.
 
 | Goal | Where it lives | What it proves |
 | --- | --- | --- |
-| Understand the primitives deeply | **this repo** (`ml-from-scratch`) — rebuild `torch.nn` from `Parameter` + matmul | I know how the building blocks work |
+| Understand the primitives deeply | **this repo** (`dl-from-scratch`) — rebuild `torch.nn` from `Parameter` + matmul | I know how the building blocks work |
 | Reproduce & train real architectures | **separate reproduction repos** — real PyTorch, full data + training + eval | I can reproduce results in practice |
 
 These are complementary, not redundant. The decisive reason to keep both:
@@ -20,7 +20,7 @@ unit-tested in isolation. Assembling them here is the only thing that proves the
 **Avoid:** making this repo's `papers/` use real PyTorch. That leaves
 `core_modules/` permanently untested in composition, defeating the point.
 
-## 2. This repo (`ml-from-scratch`)
+## 2. This repo (`dl-from-scratch`)
 
 ### Status
 - `core_modules/` transformer stack complete (embedding, attention, encoder/decoder
@@ -50,12 +50,14 @@ Assemble the paper's full model. Missing pieces beyond the existing `Transformer
   "each module has a test" rule stands. `attention.py` parity tests are the
   highest-value to add first (locks in the ~1e-15 checks already run by hand).
 
-### Possible rename (undecided)
-- Candidate: **`dl-from-scratch`** (recommended) — "deep learning" is more accurate
-  than "ml" (no classical ML here); avoid "architecture" in the name since
-  `core_modules` is building blocks, not architectures.
-- If renamed: update the `# ml-from-scratch` H1 in CLAUDE.md and `name` in
-  `pyproject.toml` to match.
+### Name (decided)
+- **`dl-from-scratch`** — locked. "deep learning" is more accurate than "ml" (no
+  classical ML here); "from scratch" is the distinctive identity and the axis that
+  separates this repo from the real-PyTorch reproduction repos. Considered and
+  rejected: "foundation" (collides with "foundation models"), "core"/"architecture"
+  (narrower, redundant with "from scratch").
+- Config/doc files updated (CLAUDE.md H1, README.md H1, `pyproject.toml` name, this doc).
+- **Still manual:** rename the on-disk folder and the GitHub repo (see §4).
 
 ## 3. Reproduction repos & portfolio strategy
 
@@ -95,7 +97,10 @@ Quality over count: real READMEs, reported results/benchmarks, and runnable demo
 matter more than the number of repos.
 
 ## 4. Open decisions
-- [ ] Rename this repo to `dl-from-scratch`? (and sync CLAUDE.md H1 + `pyproject.toml`)
+- [x] Name locked: **`dl-from-scratch`**. Config/docs updated; on-disk folder + GitHub
+      repo rename still to do manually:
+      `mv ml-from-scratch dl-from-scratch`, then update the git remote /
+      `gh repo rename dl-from-scratch`.
 - [ ] Confirm the `ml-utils` vs. per-repo boundary (what's shared vs. repo-local).
 - [ ] When to circle back and add deferred unit tests (start with `attention.py`).
 

@@ -1,11 +1,11 @@
-# ml-from-scratch
+# dl-from-scratch
 
 PyTorch modules and paper reproductions built from first principles - `nn.Module` + `nn.Parameter` + matmul + arithmetics. No `nn.Linear` or other high-level shortcuts.
 
 ## Structure
 
 - `core_modules/` - reusable building blocks (attention, norm, positional, FFN)
-- `papers/` - one directory per paper reproduced
+- `papers/` - one file per paper reproduced (architecture assembly + smoke check)
 
 ## Setup
 
