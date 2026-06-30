@@ -3,17 +3,20 @@ import torch
 import torch.nn as nn
 
 
-def conv1d_input_reshape(input):
-    return input
-
-
 def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
-    (B, C_in, L), C_out, kernel_size = input.shape, weight.size(0), weight.size(-1)
-    if groups > 1:
-        input = input.view(B, C_in // groups, groups, L).sum(dim=2)
-    input = input.unfold
-    out = input @ weight.view(C_out, -1).transpose(0, 1)
-    out = out.transpose(1, 2)
+    B, C_in, L_in = input.shape
+    C_out, kernel_size = weight.size(0), weight.size(-1)
+    input = input.view(B, groups, C_in // groups, L_in)
+    if padding != 0:
+        if isinstance(padding, tuple):
+            padding = padding[0]
+        input = nn.functional.pad(input, (padding, padding), mode="constant", value=0)
+    window_size = (kernel_size - 1) * dilation + 1
+    input = input.unfold(-1, window_size, stride).transpose(-2, -3)
+    input = input[:, :, :, :, 0:window_size:dilation].reshape(input.shape[:3] + (-1,))
+
+    out = input @ weight.view(groups, C_out // groups, -1).transpose(1, 2)
+    out = out.transpose(2, 3).reshape(B, C_out, -1)
     if bias is not None:
         out = out + bias[None, :, None]
     return out
