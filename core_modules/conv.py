@@ -7,11 +7,19 @@ def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     B, C_in, L_in = input.shape
     C_out, kernel_size = weight.size(0), weight.size(-1)
     input = input.view(B, groups, C_in // groups, L_in)
-    if padding != 0:
+    window_size = (kernel_size - 1) * dilation + 1
+    if padding != 0 and padding != "valid":
         if isinstance(padding, tuple):
             padding = padding[0]
+        if isinstance(padding, str):
+            if padding == "same":
+                assert stride == 1 and (window_size - 1) % 2 == 0
+                padding = (window_size - 1) // 2
+            else:
+                raise ValueError(f"Expect padding to be valid or same, got {padding}")
         input = nn.functional.pad(input, (padding, padding), mode="constant", value=0)
-    window_size = (kernel_size - 1) * dilation + 1
+
+    # need to use tensor.unfold as nn.Unfold or nn.functional.unfold only support 4D.
     input = input.unfold(-1, window_size, stride).transpose(-2, -3)
     input = input[:, :, :, :, 0:window_size:dilation].reshape(input.shape[:3] + (-1,))
 
