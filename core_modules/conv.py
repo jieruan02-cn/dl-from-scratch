@@ -3,22 +3,31 @@ import torch
 import torch.nn as nn
 
 
+def _canonical_padding(padding, stride, window_size):
+    if isinstance(padding, int):
+        return padding
+    elif isinstance(padding, tuple):
+        return padding[0]
+    elif isinstance(padding, str):
+        if padding == "valid":
+            return 0
+        elif padding == "same":
+            assert stride == 1 and (window_size - 1) % 2 == 0
+            return (window_size - 1) // 2
+        else:
+            raise ValueError(f"Expect padding to be valid or same, got {padding}")
+    else:
+        raise TypeError(f"Expect padding of type int/tuple/str, got {type(padding)}")
+
+
 def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     B, C_in, L_in = input.shape
     C_out, kernel_size = weight.size(0), weight.size(-1)
     input = input.view(B, groups, C_in // groups, L_in)
     window_size = (kernel_size - 1) * dilation + 1
-    if padding != 0 and padding != "valid":
-        if isinstance(padding, tuple):
-            padding = padding[0]
-        if isinstance(padding, str):
-            if padding == "same":
-                assert stride == 1 and (window_size - 1) % 2 == 0
-                padding = (window_size - 1) // 2
-            else:
-                raise ValueError(f"Expect padding to be valid or same, got {padding}")
+    padding = _canonical_padding(padding, stride, window_size)
+    if padding != 0:
         input = nn.functional.pad(input, (padding, padding), mode="constant", value=0)
-
     # need to use tensor.unfold as nn.Unfold or nn.functional.unfold only support 4D.
     input = input.unfold(-1, window_size, stride).transpose(-2, -3)
     input = input[:, :, :, :, 0:window_size:dilation].reshape(input.shape[:3] + (-1,))
@@ -71,14 +80,24 @@ class Conv1d(nn.Module):
     def forward(self, input):
         has_batch = input.dim() == 3
         input = input if has_batch else input.unsqueeze(0)
+        padding = _canonical_padding(
+            self.padding, self.stride, (self.kernel_size - 1) * self.dilation + 1
+        )
+        if padding != 0:
+            assert self.padding_mode in ("zeros", "reflect", "replicate", "circular")
+            padding_mode = (
+                "constant" if self.padding_mode == "zeros" else self.padding_mode
+            )
+            input = nn.functional.pad(input, (padding, padding), padding_mode)
+
         out = conv1d(
             input,
             self.weight,
-            self.bias,
-            self.stride,
-            self.padding,
-            self.dilation,
-            self.groups,
+            bias=self.bias,
+            stride=self.stride,
+            padding=0,
+            dilation=self.dilation,
+            groups=self.groups,
         )
         out = out if has_batch else out.squeeze(0)
         return out
