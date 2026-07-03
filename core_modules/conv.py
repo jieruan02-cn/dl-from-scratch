@@ -152,3 +152,11 @@ def conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     if bias is not None:
         out = out + bias[None, :, None, None]
     return out
+
+
+class Conv2d(nn.Module):
+    def __init__(self):
+        pass
+
+    def forward(self):
+        pass
