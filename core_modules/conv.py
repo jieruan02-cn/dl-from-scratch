@@ -38,6 +38,24 @@ def _canonical_padding2d(padding, stride_H, stride_W, size_H, size_W):
         raise TypeError(f"Expect padding of type int/tuple/str, got {type(padding)}")
 
 
+def _canonical_tuple2d(input):
+    return (input, input) if isinstance(input, int) else input
+
+
+def _validate_groups(in_channels, groups):
+    if in_channels % groups != 0:
+        raise ValueError(
+            f"Expect in_channels % groups == 0, got in_channels = {in_channels}, groups = {groups}"
+        )
+
+
+def _validate_padding_mode(padding_mode):
+    if padding_mode not in ("zeros", "reflect", "replicate", "circular"):
+        raise ValueError(
+            f"Expect padding_mode to be zeros/reflect/replicate/circular, got {padding_mode}"
+        )
+
+
 def conv1d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     B, C_in, L_in = input.shape
     C_out, kernel_size = weight.size(0), weight.size(-1)
@@ -72,16 +90,17 @@ class Conv1d(nn.Module):
         device=None,
         dtype=None,
     ):
-        if in_channels % groups != 0:
-            raise ValueError(
-                f"Expect in_channels % groups == 0, got in_channels = {in_channels}, groups = {groups}"
-            )
+        _validate_groups(in_channels, groups)
+        _validate_padding_mode(padding_mode)
+
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
         self.stride = stride
-        self.padding = padding
+        self.padding = _canonical_padding1d(
+            self.padding, self.stride, (kernel_size - 1) * dilation + 1
+        )
         self.dilation = dilation
         self.groups = groups
         self.padding_mode = padding_mode
@@ -90,23 +109,21 @@ class Conv1d(nn.Module):
         self.weight = nn.Parameter(
             torch.empty((out_channels, in_channels // groups, kernel_size), **config)
         )
-        self.bias = None
         if bias:
             self.bias = nn.Parameter(torch.empty((out_channels,), **config))
+        else:
+            self.register_parameter("bias", None)
         self.reset_parameters()
 
     def forward(self, input):
         has_batch = input.dim() == 3
         input = input if has_batch else input.unsqueeze(0)
-        padding = _canonical_padding1d(
-            self.padding, self.stride, (self.kernel_size - 1) * self.dilation + 1
-        )
-        if padding != 0:
+        if self.padding != 0:
             assert self.padding_mode in ("zeros", "reflect", "replicate", "circular")
             padding_mode = (
                 "constant" if self.padding_mode == "zeros" else self.padding_mode
             )
-            input = nn.functional.pad(input, (padding, padding), padding_mode)
+            input = nn.functional.pad(input, (self.padding, self.padding), padding_mode)
 
         out = conv1d(
             input,
@@ -155,8 +172,70 @@ def conv2d(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
 
 
 class Conv2d(nn.Module):
-    def __init__(self):
-        pass
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        padding=0,
+        dilation=1,
+        groups=1,
+        bias=True,
+        padding_mode="zeros",
+        device=None,
+        dtype=None,
+    ):
+        _validate_groups(in_channels, groups)
+        _validate_padding_mode(padding_mode)
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = _canonical_tuple2d(kernel_size)
+        self.stride = _canonical_tuple2d(stride)
+        self.dilation = _canonical_tuple2d(dilation)
+        self.padding = _canonical_padding2d(
+            padding,
+            *self.stride,
+            (self.kernel_size[0] - 1) * self.dilation[0] + 1,
+            (self.kernel_size[1] - 1) * self.dilation[1] + 1,
+        )
+        self.groups = groups
+        self.padding_mode = padding_mode
 
-    def forward(self):
-        pass
+        config = {"device": device, "dtype": dtype}
+        weight_shape = (out_channels, in_channels // groups) + self.kernel_size
+        self.weight = nn.Parameter(torch.empty(weight_shape, **config))
+        if bias:
+            self.bias = nn.Parameter(torch.empty(out_channels, **config))
+        else:
+            self.register_parameter("bias", None)
+        self.reset_parameters()
+
+    def forward(self, input):
+        has_batch = input.dim() == 4
+        input = input if has_batch else input.unsqueeze(0)
+        if self.padding != (0, 0):
+            assert self.padding_mode in ("zeros", "reflect", "replicate", "circular")
+            pad = (self.padding[1], self.padding[1], self.padding[0], self.padding[0])
+            mode = "constant" if self.padding_mode == "zeros" else self.padding_mode
+            input = nn.functional.pad(input, pad, mode)
+        out = conv2d(
+            input,
+            self.weight,
+            bias=self.bias,
+            stride=self.stride,
+            padding=0,
+            dilation=self.dilation,
+            groups=self.groups,
+        )
+        out = out if has_batch else out.squeeze(0)
+        return out
+
+    def reset_parameters(self):
+        bound = math.sqrt(
+            self.groups / (self.in_channels * math.prod(self.kernel_size))
+        )
+        nn.init.uniform_(self.weight, -bound, bound)
+        if self.bias is not None:
+            nn.init.uniform_(self.bias, -bound, bound)
