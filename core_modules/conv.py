@@ -28,6 +28,7 @@ def _canonical_padding(padding, dim, stride, size):
         raise TypeError(f"Expect padding of type int/tuple/str, got {type(padding)}")
 
 
+# TODO(jieruan): Eliminate im2col entirely via shift-and-add
 def conv(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     B, dim = input.size(0), input.dim() - 2
     C_out, C_in_per_group, *kernel_size = weight.shape
