@@ -165,9 +165,11 @@ class Conv3d(ConvBase):
 
 
 # A simple prototype of convolution via shift-and-add. It does reduce the transient
-# memory from |kernel_size|x to 1x -- though only in inference: under autograd each
-# tap's matmul saves its input for backward, so the saving needs a customized
-# autograd.Function. But it breaks the single large GEMM of the im2col conv above into
+# memory from |kernel_size|x to 1x -- and the saving survives training: every tap's
+# matmul saves the same shared input storage for backward, whereas the im2col conv
+# above gets its |kernel_size|x column matrix pinned until backward (matmul saves both
+# operands). Note this relies on matmul-then-slice; a slice-copy-per-tap variant would
+# pin |kernel_size|x again. But it breaks the single large GEMM of the im2col conv above into
 # |kernel_size| smaller ones, which lowers the FLOPs-to-bytes ratio (arithmetic
 # intensity) and adds |kernel_size| round-trips of the accumulator through memory.
 # Together these make it strictly slower in eager PyTorch, where every op boundary is
