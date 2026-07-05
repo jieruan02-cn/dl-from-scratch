@@ -32,7 +32,7 @@ def _canonical_padding(padding, dim, stride, size):
 def conv(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     B, dim = input.size(0), input.dim() - 2
     C_out, C_in_per_group, *kernel_size = weight.shape
-    # view first to avoid one memory copy after unfold.
+    # view first to avoid one memory copy after unfold + indexing.
     input = input.view(B, groups, C_in_per_group, *input.shape[2:])
 
     stride = _canonical_tuple(stride, dim)
@@ -162,3 +162,38 @@ class Conv2d(ConvBase):
 
 class Conv3d(ConvBase):
     dim = 3
+
+
+# A simple prototype of convolution via shift-and-add. It does reduce the transient
+# memory from |kernel_size|x to 1x -- though only in inference: under autograd each
+# tap's matmul saves its input for backward, so the saving needs a customized
+# autograd.Function. But it breaks the single large GEMM of the im2col conv above into
+# |kernel_size| smaller ones, which lowers the FLOPs-to-bytes ratio (arithmetic
+# intensity) and adds |kernel_size| round-trips of the accumulator through memory.
+# Together these make it strictly slower in eager PyTorch, where every op boundary is
+# a memory round-trip; only a fused kernel (e.g. Triton) that keeps the per-tap
+# accumulator in registers gets the memory saving without the slowdown. So we keep
+# this 1-D prototype for reference and don't extend it to 2-D/3-D.
+def conv1d_shift_and_add(
+    input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1
+):
+    B, C_in, L_in = input.shape
+    C_out, C_in_per_group, kernel_size = weight.shape
+    if padding != 0:
+        input = nn.functional.pad(input, (padding, padding))
+
+    input = input.view(B, groups, C_in_per_group, -1).transpose(-1, -2)
+    weight_view = weight.view(groups, C_out // groups, C_in_per_group, kernel_size)
+    weight_view = weight_view.transpose(1, 3)
+
+    L_out = (L_in + 2 * padding - (kernel_size - 1) * dilation - 1) // stride + 1
+    out = torch.zeros((B, C_out, L_out), device=input.device, dtype=input.dtype)
+    for i in range(kernel_size):
+        affined_input = (input @ weight_view[:, i, :, :]).transpose(-1, -2)
+        affined_input = affined_input.reshape(B, C_out, -1)
+        beg = i * dilation
+        out = out + affined_input[:, :, beg : (beg + L_out * stride) : stride]
+
+    if bias is not None:
+        out = out + bias[None, :, None]
+    return out
