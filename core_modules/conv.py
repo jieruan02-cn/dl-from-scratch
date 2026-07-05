@@ -8,8 +8,7 @@ def _canonical_tuple(input, dim):
 
 
 def _canonical_dilated_kernel_size(kernel_size, dilation):
-    out = (torch.tensor(kernel_size) - 1) * torch.tensor(dilation) + 1
-    return tuple(out.tolist())
+    return tuple((k - 1) * d + 1 for k, d in zip(kernel_size, dilation))
 
 
 def _canonical_padding(padding, dim, stride, size):
@@ -32,6 +31,9 @@ def _canonical_padding(padding, dim, stride, size):
 def conv(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
     B, dim = input.size(0), input.dim() - 2
     C_out, C_in_per_group, *kernel_size = weight.shape
+    # view first to avoid one memory copy after unfold.
+    input = input.view(B, groups, C_in_per_group, *input.shape[2:])
+
     stride = _canonical_tuple(stride, dim)
     dilation = _canonical_tuple(dilation, dim)
     size = _canonical_dilated_kernel_size(kernel_size, dilation)
@@ -40,15 +42,14 @@ def conv(input, weight, bias=None, stride=1, padding=0, dilation=1, groups=1):
         pad = tuple(e for pair in reversed(list(zip(padding, padding))) for e in pair)
         input = nn.functional.pad(input, pad)
     for i in range(dim):
-        input = input.unfold(dimension=i + 2, size=size[i], step=stride[i])
+        input = input.unfold(dimension=i + 3, size=size[i], step=stride[i])
     # use slice instead of range
-    indexing_tuple = tuple([slice(None)] * (2 + dim)) + tuple(
+    indexing_tuple = tuple([slice(None)] * (3 + dim)) + tuple(
         slice(0, size[i], dilation[i]) for i in range(dim)
     )
     input = input[indexing_tuple]
-    out_feature_shape = input.shape[2 : (2 + dim)]
+    out_feature_shape = input.shape[3 : (3 + dim)]
 
-    input = input.reshape(B, groups, C_in_per_group, *input.shape[2:])
     input = input.permute(
         0, 1, *range(3, 3 + dim), 2, *range(3 + dim, 3 + 2 * dim)
     ).reshape(B, groups, math.prod(out_feature_shape), -1)
