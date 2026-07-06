@@ -4,11 +4,17 @@ import torch.nn as nn
 
 
 def linear(input, weight, bias=None):
-    if bias is not None and input.dim() == 2:
-        # torch.addmm fuse matrix multiplication and addition into one cuda kernel without saving the intermediate matrix
-        return torch.addmm(bias, input, weight.mT)
-    out = input @ weight.mT
-    return out if bias is None else out + bias
+    if bias is not None:
+        if input.dim() >= 2:
+            *batch_shape, in_features = input.shape
+            input_view = input.reshape(-1, in_features)
+            out = torch.addmm(bias, input_view, weight.mT)
+            out = out.view(*batch_shape, weight.size(0))
+        else:
+            out = torch.addmv(bias, weight, input)
+    else:
+        out = input @ weight.mT
+    return out
 
 
 def bilinear(input1, input2, weight, bias=None):
