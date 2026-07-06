@@ -3,38 +3,60 @@ import torch
 import torch.nn as nn
 
 
-def linear(input, weight, bias=None):
-    if bias is not None:
-        if input.dim() >= 2:
-            *batch_shape, in_features = input.shape
-            input_view = input.reshape(-1, in_features)
-            out = torch.addmm(bias, input_view, weight.mT)
-            out = out.view(*batch_shape, weight.size(0))
-        else:
-            out = torch.addmv(bias, weight, input)
-    else:
-        out = input @ weight.mT
-    return out
-
-
-def bilinear(input1, input2, weight, bias=None):
-    # # Regular impl
-    # # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
-    # out = (input1.unsqueeze(-2).unsqueeze(-2) @ weight).squeeze(-2)
-    # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
-
-    # Superior einsum impl
-    # b: batch, i: in1, j:in2, o: out
-    out = torch.einsum("bi,oij,bj->bo", input1, weight, input2)
-    return out if bias is None else out + bias  # preferred than out += bias
-
-
 class Identity(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
     def forward(self, x):
         return x
+
+
+class LinearFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, weight, bias):
+        if bias is not None:
+            if input.dim() >= 2:
+                *batch_shape, in_features = input.shape
+                input_view = input.reshape(-1, in_features)
+                out = torch.addmm(bias, input_view, weight.mT)
+                out = out.view(*batch_shape, weight.size(0))
+            else:
+                out = torch.addmv(bias, weight, input)
+        else:
+            out = input @ weight.mT
+        return out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, weight = None, None
+        if ctx.needs_input_grad[0]:
+            weight = inputs[1]
+        if ctx.needs_input_grad[1]:
+            input = inputs[0]
+        if any(ctx.needs_input_grad):
+            ctx.save_for_backward(input, weight)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input, weight = ctx.saved_tensors
+        grad_input, grad_weight, grad_bias = None, None, None
+        if ctx.needs_input_grad[0]:
+            grad_input = grad_output @ weight
+        if ctx.needs_input_grad[1]:
+            out_features, in_features = grad_output.size(-1), input.size(-1)
+            grad_weight = grad_output.reshape(-1, out_features).mT @ input.reshape(
+                -1, in_features
+            )
+        if ctx.needs_input_grad[2]:
+            if grad_output.dim() > 1:
+                grad_bias = grad_output.sum(dim=tuple(range(0, grad_output.dim() - 1)))
+            else:
+                grad_bias = grad_output
+        return grad_input, grad_weight, grad_bias
+
+
+def linear(input, weight, bias=None):
+    return LinearFunction.apply(input, weight, bias)
 
 
 # Lessons:
@@ -63,6 +85,18 @@ class Linear(nn.Module):
 
     def forward(self, x):
         return linear(x, self.weight, self.bias)
+
+
+def bilinear(input1, input2, weight, bias=None):
+    # # Regular impl
+    # # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
+    # out = (input1.unsqueeze(-2).unsqueeze(-2) @ weight).squeeze(-2)
+    # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
+
+    # Superior einsum impl
+    # b: batch, i: in1, j:in2, o: out
+    out = torch.einsum("bi,oij,bj->bo", input1, weight, input2)
+    return out if bias is None else out + bias  # preferred than out += bias
 
 
 class LazyLinear(Linear):
