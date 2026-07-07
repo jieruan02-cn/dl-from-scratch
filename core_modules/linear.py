@@ -20,7 +20,8 @@ class LinearFunction(torch.autograd.Function):
         if bias is not None:
             if input.dim() >= 2:
                 *batch_shape, _ = input.shape
-                # flatten(0, -2) is better than reshape(-1, in_featurs) for in_features=0. Note this requires input.dim() >= 2.
+                # flatten(0, -2) is better than reshape(-1, in_featurs) for in_features
+                # = 0. Note this requires input.dim() >= 2.
                 out = torch.addmm(bias, input.flatten(0, -2), weight.mT)
                 out = out.view(*batch_shape, weight.size(0))
             else:
