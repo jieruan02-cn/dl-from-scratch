@@ -12,13 +12,16 @@ class Identity(nn.Module):
 
 
 class LinearFunction(torch.autograd.Function):
+    # allows the function to support torch.vmap()
+    generate_vmap_rule = True
+
     @staticmethod
     def forward(input, weight, bias):
         if bias is not None:
             if input.dim() >= 2:
-                *batch_shape, in_features = input.shape
-                input_view = input.reshape(-1, in_features)
-                out = torch.addmm(bias, input_view, weight.mT)
+                *batch_shape, _ = input.shape
+                # flatten(0, -2) is better than reshape(-1, in_featurs) for in_features=0. Note this requires input.dim() >= 2.
+                out = torch.addmm(bias, input.flatten(0, -2), weight.mT)
                 out = out.view(*batch_shape, weight.size(0))
             else:
                 out = torch.addmv(bias, weight, input)
@@ -28,30 +31,39 @@ class LinearFunction(torch.autograd.Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        input, weight = None, None
+        saved_input, saved_weight = None, None
         if ctx.needs_input_grad[0]:
-            weight = inputs[1]
+            saved_weight = inputs[1]
         if ctx.needs_input_grad[1]:
-            input = inputs[0]
+            saved_input = inputs[0]
         if any(ctx.needs_input_grad):
-            ctx.save_for_backward(input, weight)
+            ctx.save_for_backward(saved_input, saved_weight)
+            ctx.input_dtype = inputs[0].dtype
+            ctx.weight_dtype = inputs[1].dtype
+            ctx.bias_dtype = None if inputs[2] is None else inputs[2].dtype
 
     @staticmethod
     def backward(ctx, grad_output):
         input, weight = ctx.saved_tensors
         grad_input, grad_weight, grad_bias = None, None, None
+        # For handling AMP (Automatic Mixed Precision) where output is bf16 while
+        # input/weight is fp32
+        output_dtype = grad_output.dtype
         if ctx.needs_input_grad[0]:
-            grad_input = grad_output @ weight
+            grad_input = (grad_output @ weight.to(output_dtype)).to(ctx.input_dtype)
         if ctx.needs_input_grad[1]:
-            out_features, in_features = grad_output.size(-1), input.size(-1)
-            grad_weight = grad_output.reshape(-1, out_features).mT @ input.reshape(
-                -1, in_features
-            )
+            input = input.to(output_dtype)
+            if grad_output.dim() > 1:
+                grad_weight = grad_output.flatten(0, -2).mT @ input.flatten(0, -2)
+            else:
+                grad_weight = torch.outer(grad_output, input)
+            grad_weight = grad_weight.to(ctx.weight_dtype)
         if ctx.needs_input_grad[2]:
             if grad_output.dim() > 1:
-                grad_bias = grad_output.sum(dim=tuple(range(0, grad_output.dim() - 1)))
+                grad_bias = grad_output.flatten(0, -2).sum(dim=0)
             else:
                 grad_bias = grad_output
+            grad_bias = grad_bias.to(ctx.bias_dtype)
         return grad_input, grad_weight, grad_bias
 
 
@@ -59,8 +71,6 @@ def linear(input, weight, bias=None):
     return LinearFunction.apply(input, weight, bias)
 
 
-# Lessons:
-# 1. torch.matmul's broadcast rule requires row vector multiplication for batched input vectors.
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, bias=True, device=None, dtype=None):
         super().__init__()
@@ -87,18 +97,13 @@ class Linear(nn.Module):
         return linear(x, self.weight, self.bias)
 
 
-def bilinear(input1, input2, weight, bias=None):
-    # # Regular impl
-    # # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
-    # out = (input1.unsqueeze(-2).unsqueeze(-2) @ weight).squeeze(-2)
-    # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
-
-    # Superior einsum impl
-    # b: batch, i: in1, j:in2, o: out
-    out = torch.einsum("bi,oij,bj->bo", input1, weight, input2)
-    return out if bias is None else out + bias  # preferred than out += bias
-
-
+# Classical use cases:
+# 1. first FFN after a conv/flatten stack, without laziness, we have to hand-compute the
+# length of conv flatten output, which is annoying and prone to bugs.
+# 2. Config/data-driven model, in_features = len(columns).
+# Laziness has a cost that anything needs shapes early breaks, e.g. DDP wrapping. The
+# standard discipline is run one dummy forward to materialize everything, then build the
+# optimizer / wrap in DDP / load weights. Great for experiemnt but not production code.
 class LazyLinear(Linear):
     def __init__(self, out_features, bias=True, device=None, dtype=None):
         nn.Module.__init__(self)
@@ -118,6 +123,18 @@ class LazyLinear(Linear):
                 self.bias.materialize((self.out_features,))
             self.reset_parameters()
         return linear(x, self.weight, self.bias)
+
+
+def bilinear(input1, input2, weight, bias=None):
+    # # Regular impl
+    # # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
+    # out = (input1.unsqueeze(-2).unsqueeze(-2) @ weight).squeeze(-2)
+    # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
+
+    # Superior einsum impl
+    # b: batch, i: in1, j:in2, o: out
+    out = torch.einsum("bi,oij,bj->bo", input1, weight, input2)
+    return out if bias is None else out + bias  # preferred than out += bias
 
 
 class Bilinear(nn.Module):
