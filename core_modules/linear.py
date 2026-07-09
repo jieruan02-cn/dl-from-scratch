@@ -126,18 +126,75 @@ class LazyLinear(Linear):
         return linear(input, self.weight, self.bias)
 
 
-def bilinear(input1, input2, weight, bias=None):
-    # # Regular impl
-    # # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
-    # out = (input1.unsqueeze(-2).unsqueeze(-2) @ weight).squeeze(-2)
-    # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
+class BilinearFunction(torch.autograd.Function):
+    generate_vmap_rule = True
 
-    # Superior einsum impl
-    out = torch.einsum("...i,oij,...j->...o", input1, weight, input2)
-    if bias is not None:
-        # preferred than out += bias to avoid inplace-modification complication for grad.
-        out = out + bias
-    return out
+    @staticmethod
+    def forward(input1, input2, weight, bias):
+        # # Regular impl
+        # # input1[:, None, None, :] fail shape generality if B's dimesnion is more than 1
+        # out = (input1.unsqueeze(-2).unsqueeze(-2) @ weight).squeeze(-2)
+        # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
+
+        # Superior einsum impl
+        out = torch.einsum("...i,oij,...j->...o", input1, weight, input2)
+        if bias is not None:
+            # preferred than out += bias to avoid inplace-modification complication for grad.
+            out = out + bias
+        return out
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input1, input2, weight = None, None, None
+        if ctx.needs_input_grad[0]:
+            input2, weight = inputs[1], inputs[2]
+        if ctx.needs_input_grad[1]:
+            input1, weight = inputs[0], inputs[2]
+        if ctx.needs_input_grad[2]:
+            input1, input2 = inputs[0], inputs[1]
+        ctx.save_for_backward(input1, input2, weight)
+        ctx.input1_dtype = inputs[0].dtype
+        ctx.input2_dtype = inputs[1].dtype
+        ctx.weight_dtype = inputs[2].dtype
+        ctx.bias_dtype = inputs[3].dtype
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        input1, input2, weight = ctx.saved_tensors
+        grad_input1, grad_input2, grad_weight, grad_bias = None, None, None, None
+        output_dtype = grad_output.dtype
+        if ctx.needs_input_grad[0]:
+            grad_input1 = torch.einsum(
+                "...o,oij,...j->...i",
+                grad_output,
+                weight.to(output_dtype),
+                input2.to(output_dtype),
+            ).to(ctx.input1_dtype)
+        if ctx.needs_input_grad[1]:
+            grad_input2 = torch.einsum(
+                "...o,...i,oij->...j",
+                grad_output,
+                input1.to(output_dtype),
+                weight.to(output_dtype),
+            ).to(ctx.input2_dtype)
+        if ctx.needs_input_grad[2]:
+            grad_weight = torch.einsum(
+                "...o,...i,...j->oij",
+                grad_output,
+                input1.to(output_dtype),
+                input2.to(output_dtype),
+            ).to(ctx.weight_type)
+        if ctx.needs_input_grad[3]:
+            if grad_output.dim() > 1:
+                grad_bias = grad_output.flatten(0, -2).sum(dim=0)
+            else:
+                grad_bias = grad_output
+            grad_bias = grad_bias.to(ctx.bias_dtype)
+        return grad_input1, grad_input2, grad_weight, grad_bias
+
+
+def bilinear(input1, input2, weight, bias=None):
+    return BilinearFunction.apply(input1, input2, weight, bias)
 
 
 class Bilinear(nn.Module):
