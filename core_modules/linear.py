@@ -152,11 +152,12 @@ class BilinearFunction(torch.autograd.Function):
             input1, weight = inputs[0], inputs[2]
         if ctx.needs_input_grad[2]:
             input1, input2 = inputs[0], inputs[1]
+
         ctx.save_for_backward(input1, input2, weight)
         ctx.input1_dtype = inputs[0].dtype
         ctx.input2_dtype = inputs[1].dtype
         ctx.weight_dtype = inputs[2].dtype
-        ctx.bias_dtype = inputs[3].dtype
+        ctx.bias_dtype = None if inputs[3] is None else inputs[3].dtype
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -183,7 +184,7 @@ class BilinearFunction(torch.autograd.Function):
                 grad_output,
                 input1.to(output_dtype),
                 input2.to(output_dtype),
-            ).to(ctx.weight_type)
+            ).to(ctx.weight_dtype)
         if ctx.needs_input_grad[3]:
             if grad_output.dim() > 1:
                 grad_bias = grad_output.flatten(0, -2).sum(dim=0)
