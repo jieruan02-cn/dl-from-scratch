@@ -137,7 +137,9 @@ class BilinearFunction(torch.autograd.Function):
         # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
 
         # Superior einsum impl
-        out = torch.einsum("...i,oij,...j->...o", input1, weight, input2)
+        out = torch.einsum("...i,oij,...j->...o", input1, weight, input2).to(
+            input1.dtype
+        )
         if bias is not None:
             # preferred than out += bias to avoid inplace-modification complication for grad.
             out = out + bias
