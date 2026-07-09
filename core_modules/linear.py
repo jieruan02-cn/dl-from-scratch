@@ -7,8 +7,8 @@ class Identity(nn.Module):
     def __init__(self, *args, **kwargs):
         super().__init__()
 
-    def forward(self, x):
-        return x
+    def forward(self, input):
+        return input
 
 
 class LinearFunction(torch.autograd.Function):
@@ -94,8 +94,8 @@ class Linear(nn.Module):
             bound = 1 / math.sqrt(self.in_features) if self.in_features > 0 else 0
             nn.init.uniform_(self.bias, -bound, bound)
 
-    def forward(self, x):
-        return linear(x, self.weight, self.bias)
+    def forward(self, input):
+        return linear(input, self.weight, self.bias)
 
 
 # Classical use cases:
@@ -116,14 +116,14 @@ class LazyLinear(Linear):
         else:
             self.register_parameter("bias", None)
 
-    def forward(self, x):
+    def forward(self, input):
         if isinstance(self.weight, nn.UninitializedParameter):
-            self.in_features = x.shape[-1]
+            self.in_features = input.shape[-1]
             self.weight.materialize((self.out_features, self.in_features))
             if self.bias is not None:
                 self.bias.materialize((self.out_features,))
             self.reset_parameters()
-        return linear(x, self.weight, self.bias)
+        return linear(input, self.weight, self.bias)
 
 
 def bilinear(input1, input2, weight, bias=None):
@@ -133,9 +133,11 @@ def bilinear(input1, input2, weight, bias=None):
     # out = (out @ input2.unsqueeze(-1)).squeeze(-1)
 
     # Superior einsum impl
-    # b: batch, i: in1, j:in2, o: out
-    out = torch.einsum("bi,oij,bj->bo", input1, weight, input2)
-    return out if bias is None else out + bias  # preferred than out += bias
+    out = torch.einsum("...i,oij,...j->...o", input1, weight, input2)
+    if bias is not None:
+        # preferred than out += bias to avoid inplace-modification complication for grad.
+        out = out + bias
+    return out
 
 
 class Bilinear(nn.Module):
