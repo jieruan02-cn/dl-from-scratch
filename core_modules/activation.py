@@ -92,6 +92,21 @@ class Softmax(nn.Module):
         return softmax(input, self.dim)
 
 
+def softmin(input, dim=None, _stacklevel=3, dtype=None):
+    dim = _resolve_dim(input, dim, _stacklevel)
+
+    return SoftmaxFunction.apply(-input, dim, dtype)
+
+
+class Softmin(nn.Module):
+    def __init__(self, dim=None):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, input):
+        return softmin(input, self.dim)
+
+
 class LogSoftmaxFunction(torch.autograd.Function):
     @staticmethod
     def forward(input, dim, dtype=None):
