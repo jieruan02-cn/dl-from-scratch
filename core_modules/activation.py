@@ -998,3 +998,7 @@ class RReLU(nn.Module):
             out = input if self.inplace else input.clone()
             out.mul_(torch.where(mask, (self.lower + self.upper) * 0.5, 1.0))
             return out
+
+
+def gumbel_softmax(logits, tau=1, hard=False, eps=1e-10, dim=-1):
+    pass
