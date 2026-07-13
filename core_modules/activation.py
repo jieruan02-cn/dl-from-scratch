@@ -33,10 +33,6 @@ class Sigmoid(nn.Module):
         return sigmoid(input)
 
 
-def _default_softmax_dim(input):
-    return 0 if input.dim() in (0, 1, 3) else 1
-
-
 def _resolve_dim(input, dim, _stacklevel):
     if dim is None:
         warnings.warn(
@@ -44,7 +40,7 @@ def _resolve_dim(input, dim, _stacklevel):
             "Change the call to include dim=X as an argument.",
             stacklevel=_stacklevel,
         )
-        dim = _default_softmax_dim(input)
+        dim = 0 if input.dim() in (0, 1, 3) else 1
     return dim
 
 
