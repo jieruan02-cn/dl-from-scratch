@@ -195,8 +195,30 @@ class Tanh(nn.Module):
 #    pre-mutation values. ReLU qualifies: its backward only needs output > 0, which the in-place result still gives.
 #    Counter-example: log_'s backward needs the input value, so log_ on a tensor reused later is unsafe.
 # 3. PyTorch tracks each tensor's _version; if a saved tensor's version changes before .backward(), it raises then.
+class ReLUFunction(torch.autograd.Function):
+    @staticmethod
+    def forward(input, inplace):
+        return input.clamp_(min=0.0) if inplace else input.clamp(min=0.0)
+
+    @staticmethod
+    def setup_context(ctx, inputs, output):
+        input, inplace = inputs
+        if inplace:
+            ctx.mark_dirty(input)
+        if ctx.needs_input_grad[0]:
+            ctx.save_for_backward(output)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        (out,) = ctx.saved_tensors
+        # Claude mentions this is faster than grad_output * (out > 0.0) due to dtype
+        # mismatch multiplication is slower. Double check.
+        grad_input = torch.where(out > 0.0, grad_output, 0.0)
+        return grad_input, None
+
+
 def relu(input, inplace=False):
-    return input.clamp_(min=0) if inplace else input.clamp(min=0)
+    return ReLUFunction.apply(input, inplace)
 
 
 class ReLU(nn.Module):
