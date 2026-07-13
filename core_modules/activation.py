@@ -212,7 +212,8 @@ class ReLUFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         (out,) = ctx.saved_tensors
         # Claude mentions this is faster than grad_output * (out > 0.0) due to dtype
-        # mismatch multiplication is slower. Double check.
+        # mismatch multiplication is slower, empirical benchmarking also suggest it's
+        # faster than grad_input = grad_output.masked_fill(out > 0.0, 0.0).
         grad_input = torch.where(out > 0.0, grad_output, 0.0)
         return grad_input, None
 
@@ -240,7 +241,7 @@ class ReLU6Function(torch.autograd.Function):
         input, inplace = inputs
         if inplace:
             ctx.mark_dirty(input)
-        if input.requires_grad:
+        if ctx.needs_input_grad[0]:
             # saves output instead of mask as output already in VRAM and saves memory in
             # fact compared to constructing a new mask tensor
             ctx.save_for_backward(output)
