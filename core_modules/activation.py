@@ -64,7 +64,9 @@ class SoftmaxFunction(torch.autograd.Function):
         # Compute the jacobian explicitly will explode the memory, avoid that.
         grad_input = grad_output * out
         grad_input = grad_input - grad_input.sum(dim=ctx.dim, keepdim=True) * out
-        return grad_input.to(ctx.input_dtype), None, None
+        # functionally not necessary as pytorch autograd engine default cast after return.
+        grad_input = grad_input.to(ctx.input_dtype)
+        return grad_input, None, None
 
 
 def softmax(input, dim=None, _stacklevel=3, dtype=None):
@@ -109,8 +111,9 @@ class LogSoftmaxFunction(torch.autograd.Function):
         if dtype is not None:
             input = input.to(dtype)
         out = input - input.max(dim=dim, keepdim=True).values
-        # Use torch.logsumexp for simplicity and speed, keep it plain for learning.
-        return out - torch.log(torch.exp(out).sum(dim=dim, keepdim=True))
+        # equivalent to out.exp().sum(dim=dim, keepdim=True).log().
+        out = out - torch.logsumexp(out, dim=dim, keepdim=True)
+        return out
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -124,7 +127,8 @@ class LogSoftmaxFunction(torch.autograd.Function):
         grad_input = grad_output - grad_output.sum(
             dim=ctx.dim, keepdim=True
         ) * torch.exp(out)
-        return grad_input.to(ctx.input_dtype), None, None
+        grad_input = grad_input.to(ctx.input_dtype)
+        return grad_input, None, None
 
 
 def log_softmax(input, dim=None, _stacklevel=3, dtype=None):
