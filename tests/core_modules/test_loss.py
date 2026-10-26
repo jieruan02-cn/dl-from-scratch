@@ -10,7 +10,12 @@ import torch.nn.functional as F
 # itself has to be on sys.path.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "core_modules"))
 
-from loss import GaussianNLLLoss, gaussian_nll_loss  # noqa: E402
+from loss import (  # noqa: E402
+    GaussianNLLLoss,
+    PoissonNLLLoss,
+    gaussian_nll_loss,
+    poisson_nll_loss,
+)
 
 
 def _grads(fn, input, target, var, **kwargs):
@@ -157,4 +162,119 @@ def test_gaussian_nll_module_matches_torch(reduction, full):
     var = torch.rand(4, 3) + 0.1
     out = GaussianNLLLoss(full=full, reduction=reduction)(input, target, var)
     ref = nn.GaussianNLLLoss(full=full, reduction=reduction)(input, target, var)
+    assert torch.allclose(out, ref)
+
+
+# ── poisson nll: matches torch ────────────────────────────────────────────────
+
+
+def _poisson_grads(fn, input, target, **kwargs):
+    input = input.clone().requires_grad_()
+    out = fn(input, target, **kwargs)
+    out.sum().backward()
+    return out.detach(), input.grad
+
+
+def _assert_poisson_matches_torch(input, target, **kwargs):
+    out, grad = _poisson_grads(poisson_nll_loss, input, target, **kwargs)
+    ref, ref_grad = _poisson_grads(F.poisson_nll_loss, input, target, **kwargs)
+    assert out.shape == ref.shape
+    assert torch.allclose(out, ref)
+    assert torch.allclose(grad, ref_grad)
+
+
+def _counts(*shape):
+    # Poisson samples with rate 2 include plenty of 0s and 1s.
+    return torch.poisson(torch.full(shape, 2.0, dtype=torch.float64))
+
+
+@pytest.mark.parametrize("full", [False, True])
+@pytest.mark.parametrize("log_input", [True, False])
+@pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+def test_poisson_nll_matches_torch(reduction, log_input, full):
+    torch.manual_seed(0)
+    if log_input:
+        input = torch.randn(4, 3, dtype=torch.float64)
+    else:
+        input = torch.rand(4, 3, dtype=torch.float64) + 0.1
+    target = _counts(4, 3)
+    target[0, :2] = torch.tensor([0.0, 1.0])  # full=True must skip these
+    _assert_poisson_matches_torch(
+        input, target, log_input=log_input, full=full, reduction=reduction
+    )
+
+
+def test_poisson_nll_unbatched_and_broadcast_target():
+    torch.manual_seed(0)
+    _assert_poisson_matches_torch(torch.randn(5, dtype=torch.float64), _counts(5))
+    _assert_poisson_matches_torch(
+        torch.randn(4, 3, dtype=torch.float64), _counts(3), reduction="none"
+    )
+
+
+# ── poisson nll: full, eps ────────────────────────────────────────────────────
+
+
+def test_poisson_nll_full_stirling_only_for_target_above_one():
+    # log(y!) is exactly 0 for y = 0 and y = 1, and Stirling's approximation is
+    # poor below 1, so torch adds the term only where target > 1.
+    input = torch.zeros(5, dtype=torch.float64)
+    target = torch.tensor([0.0, 0.5, 1.0, 1.5, 3.0], dtype=torch.float64)
+    base = poisson_nll_loss(input, target, reduction="none")
+    out = poisson_nll_loss(input, target, full=True, reduction="none")
+    assert torch.equal(out[:3], base[:3])
+    assert torch.all(out[3:] > base[3:])
+    _assert_poisson_matches_torch(input, target, full=True, reduction="none")
+
+
+def test_poisson_nll_full_zero_target_is_finite():
+    input = torch.randn(4, 3)
+    target = torch.zeros(4, 3)
+    assert torch.isfinite(poisson_nll_loss(input, target, full=True))
+
+
+def test_poisson_nll_rate_input_below_eps():
+    # With log_input=False the loss takes log(input + eps), so input = 0 stays
+    # finite and its gradient matches torch.
+    input = torch.tensor([0.0, 1e-12, 1.0], dtype=torch.float64)
+    target = torch.ones(3, dtype=torch.float64)
+    out, grad = _poisson_grads(
+        poisson_nll_loss, input, target, log_input=False, reduction="none"
+    )
+    assert torch.all(torch.isfinite(out)) and torch.all(torch.isfinite(grad))
+    _assert_poisson_matches_torch(input, target, log_input=False, reduction="none")
+
+
+@pytest.mark.parametrize("log_input", [True, False])
+def test_poisson_nll_gradcheck(log_input):
+    torch.manual_seed(0)
+    if log_input:
+        input = torch.randn(4, 3, dtype=torch.float64, requires_grad=True)
+    else:
+        input = (torch.rand(4, 3, dtype=torch.float64) + 0.1).requires_grad_()
+    target = _counts(4, 3)
+    assert torch.autograd.gradcheck(
+        lambda i: poisson_nll_loss(i, target, log_input=log_input, full=True),
+        (input,),
+    )
+
+
+def test_poisson_nll_invalid_reduction_raises():
+    with pytest.raises(ValueError):
+        poisson_nll_loss(torch.randn(4, 3), _counts(4, 3), reduction="avg")
+
+
+# ── poisson nll: module ───────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("full", [False, True])
+@pytest.mark.parametrize("log_input", [True, False])
+@pytest.mark.parametrize("reduction", ["none", "mean", "sum"])
+def test_poisson_nll_module_matches_torch(reduction, log_input, full):
+    torch.manual_seed(0)
+    input = torch.rand(4, 3) + 0.1
+    target = torch.poisson(torch.full((4, 3), 2.0))
+    kwargs = dict(log_input=log_input, full=full, reduction=reduction)
+    out = PoissonNLLLoss(**kwargs)(input, target)
+    ref = nn.PoissonNLLLoss(**kwargs)(input, target)
     assert torch.allclose(out, ref)

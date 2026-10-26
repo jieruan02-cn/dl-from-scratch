@@ -994,6 +994,18 @@ class CTCLoss(nn.Module):
         )
 
 
+# Mistakes made along the way:
+# 1. Float var: bare torch.tensor(var) is float32 on CPU; match input's dtype
+#    and device instead.
+# 2. Negative check: once checked only float var; a tensor var can be negative.
+# 3. Clamp, in order: tracked var.clamp (zero grad below eps); clamp under
+#    no_grad (cuts var from the graph); clamp_ on var itself (mutates the
+#    caller's tensor, breaks backward through exp). Clone + in-place clamp
+#    under no_grad keeps var in the graph with an identity grad.
+# 4. full: added numel() * constant after reducing, wrong for mean. The
+#    constant is per element, so add it before _reduce.
+# Still wrong: the var shape check is ndim only. torch raises for e.g. var
+# (4, 3, 1) or (2, 3) with input (4, 3); this broadcasts or crashes instead.
 def gaussian_nll_loss(input, target, var, full=False, eps=1e-06, reduction="mean"):
     if isinstance(var, float):
         var = torch.tensor(var, dtype=input.dtype, device=input.device)
@@ -1022,4 +1034,41 @@ class GaussianNLLLoss(nn.Module):
     def forward(self, input, target, var):
         return gaussian_nll_loss(
             input, target, var, self.full, self.eps, self.reduction
+        )
+
+
+# Mistakes made along the way:
+# 1. full: added Stirling's term everywhere, giving nan at target 0 and a wrong
+#    value at target 1. log(y!) is 0 for y <= 1, so torch skips it there.
+# 2. PoissonNLLLoss.__init__ was missing super().__init__(); the module then
+#    failed on its first call.
+def poisson_nll_loss(
+    input, target, log_input=True, full=False, eps=1e-08, reduction="mean"
+):
+    if log_input:
+        out = torch.exp(input) - target * input
+    else:
+        out = input - target * torch.log(input + eps)
+    if full:
+        out = out + torch.where(
+            target <= 1,
+            0.0,
+            target * torch.log(target)
+            - target
+            + 0.5 * torch.log(2 * torch.pi * target),
+        )
+    return _reduce(out, reduction)
+
+
+class PoissonNLLLoss(nn.Module):
+    def __init__(self, log_input=True, full=False, eps=1e-08, reduction="mean"):
+        super().__init__()
+        self.log_input = log_input
+        self.full = full
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, log_input, target):
+        return poisson_nll_loss(
+            log_input, target, self.log_input, self.full, self.eps, self.reduction
         )
