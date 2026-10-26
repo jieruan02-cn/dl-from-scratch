@@ -4,19 +4,23 @@ import torch.nn as nn
 from activation import logsigmoid, sigmoid, log_softmax, softmax
 
 
+def _reduce(x, reduction):
+    if reduction == "none":
+        return x
+    elif reduction == "mean":
+        return torch.mean(x)
+    elif reduction == "sum":
+        return torch.sum(x)
+    else:
+        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+
 def mse_loss(input, target, reduction="mean", weight=None):
     diff = input - target
     out = diff * diff
     if weight is not None:
         out = out * weight
-    if reduction == "none":
-        return out
-    elif reduction == "mean":
-        return torch.mean(out)
-    elif reduction == "sum":
-        return torch.sum(out)
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class MSELoss(nn.Module):
@@ -32,14 +36,7 @@ def l1_loss(input, target, reduction="mean", weight=None):
     out = torch.abs(input - target)
     if weight is not None:
         out = out * weight
-    if reduction == "none":
-        return out
-    elif reduction == "mean":
-        return torch.mean(out)
-    elif reduction == "sum":
-        return torch.sum(out)
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class L1Loss(nn.Module):
@@ -65,15 +62,7 @@ class HuberLossFunction(torch.autograd.Function):
         )
         if weight is not None:
             out = out * weight
-
-        if reduction == "none":
-            return out
-        elif reduction == "mean":
-            return torch.mean(out)
-        elif reduction == "sum":
-            return torch.sum(out)
-        else:
-            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+        return _reduce(out, reduction)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -158,15 +147,7 @@ class BCELossFunction(torch.autograd.Function):
         )
         if weight is not None:
             out = out * weight
-
-        if reduction == "none":
-            return out
-        elif reduction == "mean":
-            return torch.mean(out)
-        elif reduction == "sum":
-            return torch.sum(out)
-        else:
-            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+        return _reduce(out, reduction)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -220,15 +201,7 @@ class BCEWithLogitsLossFunction(torch.autograd.Function):
             out = out - (1 - target + pos_weight * target) * log_sig
         if weight is not None:
             out = out * weight
-
-        if reduction == "none":
-            return out
-        elif reduction == "mean":
-            return torch.mean(out)
-        elif reduction == "sum":
-            return torch.sum(out)
-        else:
-            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+        return _reduce(out, reduction)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -636,14 +609,7 @@ def cosine_embedding_loss(input1, input2, target, margin=0.0, reduction="mean"):
     # would otherwise hold — there's nothing to collapse here.
     cos_sim = cosine_similarity(input1, input2, dim=-1)
     out = torch.where(target == 1, 1 - cos_sim, (cos_sim - margin).clamp(min=0.0))
-    if reduction == "mean":
-        return out.mean()
-    elif reduction == "sum":
-        return out.sum()
-    elif reduction == "none":
-        return out
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class CosineEmbeddingLoss(nn.Module):
@@ -660,14 +626,7 @@ class CosineEmbeddingLoss(nn.Module):
 
 def hinge_embedding_loss(input, target, margin=1.0, reduction="mean"):
     out = torch.where(target == 1, input, (margin - input).clamp(min=0.0))
-    if reduction == "mean":
-        return out.mean()
-    elif reduction == "sum":
-        return out.sum()
-    elif reduction == "none":
-        return out
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class HingeEmbeddingLoss(nn.Module):
@@ -719,14 +678,7 @@ def soft_margin_loss(input, target, reduction="mean"):
     # 1-2 kernels saved, the customized version saves input + target, while input *
     # target saves target and logsigmoid saves input or ouput.
     out = -logsigmoid(input * target)
-    if reduction == "mean":
-        return out.mean()
-    elif reduction == "sum":
-        return out.sum()
-    elif reduction == "none":
-        return out
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class SoftMarginLoss(nn.Module):
@@ -740,14 +692,7 @@ class SoftMarginLoss(nn.Module):
 
 def margin_ranking_loss(input1, input2, target, margin=0.0, reduction="mean"):
     out = (margin - target * (input1 - input2)).clamp(min=0.0)
-    if reduction == "mean":
-        return out.mean()
-    elif reduction == "sum":
-        return out.sum()
-    elif reduction == "none":
-        return out
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class MarginRankingLoss(nn.Module):
@@ -793,14 +738,7 @@ def triplet_margin_with_distance_loss(
         out = (d_ap - torch.minimum(d_an, d_pn) + margin).clamp(min=0.0)
     else:
         out = (d_ap - d_an + margin).clamp(min=0.0)
-    if reduction == "mean":
-        return out.mean()
-    elif reduction == "sum":
-        return out.sum()
-    elif reduction == "none":
-        return out
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class TripletMarginWithDistanceLoss(nn.Module):
@@ -888,15 +826,7 @@ class MultiMarginLossFunction(torch.autograd.Function):
 
         if weight is not None:
             out.mul_(weight[target])
-
-        if reduction == "mean":
-            return out.mean()
-        elif reduction == "sum":
-            return out.sum()
-        elif reduction == "none":
-            return out
-        else:
-            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+        return _reduce(out, reduction)
 
     @staticmethod
     def backward(ctx, grad_output):
@@ -961,15 +891,7 @@ class MultiLabelMarginLossFunction(torch.autograd.Function):
             .repeat_interleave(C, -1)
         )
         out = (full_prod.clamp(min=0.0) * target_mask * input_mask).sum(dim=-1).div_(C)
-
-        if reduction == "mean":
-            return out.mean()
-        elif reduction == "sum":
-            return out.sum()
-        elif reduction == "none":
-            return out
-        else:
-            raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+        return _reduce(out, reduction)
 
     @staticmethod
     def setup_context(ctx, inputs, output):
@@ -1087,14 +1009,7 @@ def gaussian_nll_loss(input, target, var, full=False, eps=1e-06, reduction="mean
     out = 0.5 * (diff * diff / var_clone + torch.log(var_clone))
     if full:
         out = out + 0.5 * math.log(2 * math.pi)
-    if reduction == "none":
-        return out
-    elif reduction == "mean":
-        return torch.mean(out)
-    elif reduction == "sum":
-        return torch.sum(out)
-    else:
-        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+    return _reduce(out, reduction)
 
 
 class GaussianNLLLoss(nn.Module):
