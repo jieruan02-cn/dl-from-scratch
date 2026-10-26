@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from activation import logsigmoid, sigmoid, log_softmax, softmax
@@ -1068,4 +1069,42 @@ class CTCLoss(nn.Module):
             self.blank,
             self.reduction,
             self.zero_infinity,
+        )
+
+
+def gaussian_nll_loss(input, target, var, full=False, eps=1e-06, reduction="mean"):
+    if isinstance(var, float):
+        var = torch.tensor(var, dtype=input.dtype, device=input.device)
+    elif var.dim() != input.dim():
+        var = var.unsqueeze(-1)
+    if torch.any(var < 0):
+        raise ValueError("Var cannot be negative.")
+
+    diff = input - target
+    var_clone = var.clone()
+    with torch.no_grad():
+        var_clone.clamp_(min=eps)
+    out = 0.5 * (diff * diff / var_clone + torch.log(var_clone))
+    if full:
+        out = out + 0.5 * math.log(2 * math.pi)
+    if reduction == "none":
+        return out
+    elif reduction == "mean":
+        return torch.mean(out)
+    elif reduction == "sum":
+        return torch.sum(out)
+    else:
+        raise ValueError(f"Expect reduction to be none/mean/sum, got {reduction}.")
+
+
+class GaussianNLLLoss(nn.Module):
+    def __init__(self, full=False, eps=1e-06, reduction="mean"):
+        super().__init__()
+        self.full = full
+        self.eps = eps
+        self.reduction = reduction
+
+    def forward(self, input, target, var):
+        return gaussian_nll_loss(
+            input, target, var, self.full, self.eps, self.reduction
         )
